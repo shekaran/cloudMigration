@@ -172,6 +172,11 @@ class VMwareAdapter(AbstractBaseAdapter):
                 },
             )
 
+            # Back-populate attached_to on storage volumes with VM UUID
+            for vol in storage:
+                if vol.id in disk_ids:
+                    vol.attached_to = cr.id
+
             # Build dependencies: VM depends on its networks
             for net_id in net_iface_ids:
                 cr.dependencies.append(
@@ -231,7 +236,6 @@ class VMwareAdapter(AbstractBaseAdapter):
                         region=datacenter,
                         type=StorageType.BLOCK,
                         size_gb=disk.get("capacity_gb", 0),
-                        attached_to=vm.get("vm_id", ""),
                         mount_point=f"/dev/sd{chr(97 + i)}",
                         tags=_parse_tags(vm.get("tags", [])),
                         metadata={

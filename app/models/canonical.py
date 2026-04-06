@@ -118,8 +118,8 @@ class StorageVolume(BaseResource):
     type: StorageType = Field(description="Kind of storage")
     size_gb: int = Field(gt=0, description="Volume size in gigabytes")
     iops: int | None = Field(default=None, description="Provisioned IOPS if applicable")
-    attached_to: str = Field(
-        default="", description="ID of the compute resource this is attached to"
+    attached_to: UUID | None = Field(
+        default=None, description="UUID of the compute resource this is attached to"
     )
     mount_point: str = Field(default="", description="Filesystem mount point")
 

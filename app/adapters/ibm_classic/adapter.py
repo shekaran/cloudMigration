@@ -191,6 +191,11 @@ class IBMClassicAdapter(AbstractBaseAdapter):
                 },
             )
 
+            # Back-populate attached_to on storage volumes with VM UUID
+            for vol in storage:
+                if vol.id in disk_ids:
+                    vol.attached_to = vm.id
+
             # Build dependencies: VM depends on its networks
             for net_id in net_iface_ids:
                 vm.dependencies.append(
@@ -310,7 +315,6 @@ class IBMClassicAdapter(AbstractBaseAdapter):
                         region=vsi.get("datacenter", {}).get("name", ""),
                         type=StorageType.BLOCK,
                         size_gb=disk.get("capacity", 0),
-                        attached_to=str(vsi.get("id", "")),
                         mount_point=f"/dev/xvd{chr(97 + i)}",
                         tags=_parse_tags(vsi.get("tagReferences", [])),
                         metadata={
