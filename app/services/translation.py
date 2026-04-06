@@ -116,38 +116,45 @@ class TranslationService:
     def _translate_security_policies(
         self, policies: list[SecurityPolicy], vpc_id: "UUID"
     ) -> list[VPCSecurityGroup]:
-        """Map source firewall/security rules to VPC security groups."""
+        """Map source firewall/security policies to VPC security groups.
+
+        Each SecurityPolicy (grouped model) becomes one VPC security group.
+        Its SecurityRule sub-objects become VPCSecurityGroupRule entries.
+        """
         if not policies:
             return []
 
-        # Group all rules into a single security group for MVP
-        rules: list[VPCSecurityGroupRule] = []
+        security_groups: list[VPCSecurityGroup] = []
         for policy in policies:
-            port_min = policy.port
-            port_max = policy.port
-            if policy.port_range:
-                parts = policy.port_range.split("-")
-                if len(parts) == 2:
-                    port_min = int(parts[0])
-                    port_max = int(parts[1])
+            vpc_rules: list[VPCSecurityGroupRule] = []
+            for rule in policy.rules:
+                port_min = rule.port
+                port_max = rule.port
+                if rule.port_range:
+                    parts = rule.port_range.split("-")
+                    if len(parts) == 2:
+                        port_min = int(parts[0])
+                        port_max = int(parts[1])
 
-            rules.append(
-                VPCSecurityGroupRule(
-                    direction=policy.direction,
-                    protocol=policy.protocol.value,
-                    port_min=port_min,
-                    port_max=port_max,
-                    remote_cidr=policy.source,
+                vpc_rules.append(
+                    VPCSecurityGroupRule(
+                        direction=rule.direction,
+                        protocol=rule.protocol.value,
+                        port_min=port_min,
+                        port_max=port_max,
+                        remote_cidr=rule.source,
+                    )
+                )
+
+            security_groups.append(
+                VPCSecurityGroup(
+                    name=f"{self._vpc_name}-{policy.name}".lower().replace(" ", "-"),
+                    vpc_id=vpc_id,
+                    region=self._region,
+                    rules=vpc_rules,
                 )
             )
-
-        sg = VPCSecurityGroup(
-            name=f"{self._vpc_name}-sg",
-            vpc_id=vpc_id,
-            region=self._region,
-            rules=rules,
-        )
-        return [sg]
+        return security_groups
 
     def _translate_compute(
         self,

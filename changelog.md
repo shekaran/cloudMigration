@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.2.1] - 2026-04-06 07:00 IST
+
+### Data Model Alignment (Issue #31)
+
+#### Changed
+- **Canonical models**: Added `region`, `image`, `disks` (UUID list), `network_interfaces` (UUID list), `security_groups` (UUID list), `stateful` to `ComputeResource`; added `zone`, `connected_resources` (UUID list) to `NetworkSegment`; added `mount_point` to `StorageVolume`; changed `tags` from `list[str]` to `dict[str, str]` on `BaseResource`
+- **SecurityPolicy refactor**: Converted from flat one-object-per-rule to grouped model with `SecurityRule` sub-model (`rules: list[SecurityRule]`, `applied_to: list[UUID]`, `SecurityPolicyType` enum)
+- **IBM Classic adapter**: Full rewrite of normalization — populates all new fields, UUID-based cross-references for disks/networks/security groups, grouped SecurityPolicy with SecurityRule list
+- **VMware adapter**: Updated normalization — dict tags via `_parse_tags()`, region/image/disks/network_interfaces/stateful/zone/connected_resources/mount_point populated
+- **TranslationService**: Updated `_translate_security_policies()` to consume grouped SecurityPolicy model (iterates `policy.rules` instead of flat policy fields)
+
+#### References
+- GitHub Issue: #31
+
+---
+
 ## [0.2.0] - 2026-04-06 06:23 IST
 
 ### Phase 1 — MVP (End-to-End Migration)

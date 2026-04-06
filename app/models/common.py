@@ -32,8 +32,9 @@ class BaseResource(BaseModel):
     id: UUID = Field(default_factory=uuid4, description="Unique resource identifier")
     name: str = Field(description="Human-readable resource name")
     platform: str = Field(description="Source platform (e.g. ibm_classic, vmware)")
+    region: str = Field(default="", description="Source region")
     metadata: dict = Field(default_factory=dict, description="Platform-specific metadata")
-    tags: list[str] = Field(default_factory=list, description="User-defined tags")
+    tags: dict[str, str] = Field(default_factory=dict, description="Key-value metadata tags")
     dependencies: list[ResourceDependency] = Field(
         default_factory=list, description="Relationships to other resources"
     )

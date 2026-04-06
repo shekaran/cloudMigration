@@ -5,6 +5,7 @@ from app.models.canonical import (
     KubernetesResource,
     NetworkSegment,
     SecurityPolicy,
+    SecurityRule,
     StorageVolume,
 )
 from app.models.common import BaseResource, ResourceDependency
@@ -15,6 +16,7 @@ __all__ = [
     "ComputeResource",
     "NetworkSegment",
     "SecurityPolicy",
+    "SecurityRule",
     "StorageVolume",
     "KubernetesResource",
 ]
