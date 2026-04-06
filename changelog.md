@@ -8,30 +8,87 @@ All notable changes to this project will be documented in this file.
 
 ### Phase 2 — Orchestration & Intelligence
 
-Phase 2 adds dependency graph analysis, strategy-aware translation, pre-migration validation, intelligent network planning, and Temporal workflow integration.
+Phase 2 introduces reliability and execution intelligence — dependency-ordered migration, workload-aware strategy selection, pre-flight validation, and intelligent network allocation.
 
-#### Added
-- **Dependency Graph Engine** (`app/graph/engine.py`): Directed graph from `ResourceDependency` objects, topological sort (Kahn's algorithm), cycle detection (DFS), parallel execution stages, JSON export, Graphviz DOT visualization with color-coded node types and edge styles. Issue #9.
-- **Strategy Engine** (`app/services/strategy.py`): Classifies workloads into `lift_and_shift`, `replatform`, `rebuild`, `kubernetes_migration` based on statefulness, resource sizing, OS complexity, dependency count. Strategy changes translation output — replatform VMs get memory-optimized profiles (`mx2` family) and larger boot volumes. Issue #10.
-- **Validation Engine** (`app/services/validation.py`): Pre-migration checks with ERROR/WARNING/INFO severity levels. Checks: OS compatibility, CPU/memory limits, NIC count, CIDR format, CIDR overlap, security rule limits, storage limits, orphaned volumes, cyclic dependencies, dangling UUID references. Default blocks execution; overridable with `skip_validation=true`. Issue #11.
-- **Network Planner v1** (`app/services/network_planner.py`): Allocates fresh CIDRs from configurable target VPC range (default `10.240.0.0/16`), preserves subnet sizing (prefix length), round-robin zone distribution, conflict detection (overlap, exhaustion, sizing). Issue #28.
-- **Temporal Workflow Integration**: `MigrationWorkflow` with 6 activities (discover, normalize, validate, analyze, translate, migrate_data), retry policy (3 attempts, exponential backoff), workflow queries for current step and progress, Temporal worker with task queue. `docker-compose.temporal.yml` for server setup. Issue #8.
-- **New API endpoints**: `POST /validate/{adapter}`, `POST /analyze/{adapter}` (strategy + network plan), `GET /graph/{adapter}?format=dot` (dependency graph with Graphviz DOT)
-- **Execution pipeline**: 7-step pipeline — discover → normalize → validate → analyze → translate → generate_terraform → migrate_data
-- `VPCInstance.migration_strategy` field for strategy-aware Terraform output
-- `JobResponse` extended with `validation_errors`, `validation_warnings`, `strategy_summary`
-- `POST /execute/{adapter}?skip_validation=true` to override validation blocking
+#### 1. Dependency Graph Engine (`app/graph/engine.py`) — Issue #9
 
-#### Changed
-- **TranslationService**: Accepts optional `StrategyResult` and `NetworkPlan`. Replatform VMs get `mx2-*` profiles and 200GB+ boot volumes. Network plan CIDRs replace source CIDRs. Backward compatible — Phase 1 calls still work.
-- **MigrationOrchestrator**: Integrates all Phase 2 engines. Pipeline expanded from 5 to 7 steps. New `VALIDATING`, `ANALYZING`, `VALIDATION_FAILED` job states.
-- **dependencies.py**: Extended with `StrategyEngine`, `ValidationEngine`, `NetworkPlanner` DI providers
-- **main.py**: Wires all Phase 2 engines at startup; registers analysis router
-- **pyproject.toml**: Added `temporalio>=1.24.0`; version bumped to 0.4.0
+Builds a directed acyclic graph from all resource dependencies (UUID-based edges).
+
+- **Topological sort** (Kahn's algorithm) — determines correct execution order so dependencies are provisioned before dependents
+- **Cycle detection** (DFS) — catches circular dependencies before they break execution, raises `CyclicDependencyError` with the cycle path
+- **Parallel execution stages** — groups resources that can migrate concurrently (e.g., all networks in stage 0, all VMs in stage 1)
+- **Graphviz DOT export** — color-coded visualization: blue=compute (box), green=network (ellipse), purple=storage (cylinder), orange=security (diamond). Edge styles vary by dependency type (solid=network, dashed=storage, dotted=security)
+- **JSON export** — nodes with id/label/type, edges with source/target/type for API consumption
+
+#### 2. Strategy Engine (`app/services/strategy.py`) — Issue #10
+
+Classifies every resource into a migration strategy. **Strategy assignment changes actual translation output.**
+
+- **Strategies**: `lift_and_shift`, `replatform`, `rebuild`, `kubernetes_migration`
+- **Classification inputs**: resource type (VM/baremetal/container), statefulness, CPU/memory sizing, OS complexity (Windows/SLES/AIX trigger replatform), dependency count (critical resources with 3+ dependents)
+- **Translation impact**:
+  - `lift_and_shift` → standard `bx2-*` profiles, direct disk mapping
+  - `replatform` → memory-optimized `mx2-*` profiles, 200GB+ boot volumes
+  - `rebuild` → minimal fresh instance, no data volumes carried over
+  - `kubernetes_migration` → flagged for container pipeline
+- **Per-resource rationale** with risk level (low/medium/high) and estimated downtime (minimal/moderate/extended)
+- Storage volumes inherit strategy from their attached compute resource
+
+#### 3. Validation Engine (`app/services/validation.py`) — Issue #11
+
+Runs 32 pre-migration checks with severity levels. **Default blocks execution on ERRORs.**
+
+- **Compute checks**: OS compatibility against supported VPC images, CPU limit (max 64 vCPU), memory limit (max 256GB), NIC count (max 5), missing IP addresses
+- **Network checks**: CIDR format validation (RFC 4632), duplicate CIDR detection, overlapping CIDR detection between networks
+- **Security checks**: Rule count limit (max 50 per security group), unsupported protocol detection
+- **Storage checks**: Volume size limit (max 16TB), orphaned volumes (not attached), invalid attachment references (dangling UUIDs)
+- **Graph checks**: Cyclic dependency detection, isolated resource detection (no dependencies)
+- **Reference integrity**: Validates all UUID cross-references (disks, network_interfaces) resolve to existing resources
+- **Override**: `skip_validation=true` on `/execute` endpoint bypasses blocking — all errors collected and reported in job output
+
+#### 4. Network Planner v1 (`app/services/network_planner.py`) — Issue #28
+
+Allocates fresh target CIDRs instead of preserving source CIDRs (which may conflict or not fit the target VPC).
+
+- **Target range**: Configurable VPC CIDR (default `10.240.0.0/16`)
+- **Sizing preservation**: Keeps source prefix length (e.g., source `/24` → target `/24`) so host capacity matches
+- **Sequential allocation**: Walks VPC address space finding first non-overlapping block for each subnet
+- **Zone distribution**: Round-robin across availability zones (e.g., `us-south-1`, `us-south-2`, `us-south-3`)
+- **Conflict detection**:
+  - `overlap` — source networks with overlapping CIDRs (informational, target allocations are non-overlapping)
+  - `exhaustion` — VPC address space too small for requested subnets
+  - `sizing` — source subnet larger than VPC (auto-downsizes with warning)
+- **Gateway allocation**: First usable address in each allocated subnet
+
+#### 5. Temporal Workflow Integration (`app/workflows/`) — Issue #8
+
+Production-grade workflow orchestration replacing the sequential in-process pipeline.
+
+- **Workflow**: `MigrationWorkflow` with 6 activities — discover, normalize, validate, analyze, translate, migrate_data
+- **Retry policy**: 3 attempts per activity, exponential backoff (1s initial, 2x coefficient, 30s max interval)
+- **Activity timeouts**: 5 min for discovery/normalization/validation/analysis, 10 min for translation, 30 min for data migration
+- **Workflow queries**: `current_step()` and `steps_completed()` for real-time progress tracking
+- **Validation gate**: Workflow halts with `validation_failed` status if errors detected (unless `skip_validation=true`)
+- **Worker**: `app/workflows/worker.py` connects to Temporal server, registers all activities on `migration-task-queue`
+- **Infrastructure**: `docker-compose.temporal.yml` with Temporal server (SQLite backend) + Web UI at `localhost:8233`
+
+#### 6. Updated Pipeline & API
+
+- **Orchestrator pipeline expanded**: 5 steps → 7 steps (discover → normalize → **validate** → **analyze** → translate → generate_terraform → migrate_data)
+- **New job states**: `VALIDATING`, `ANALYZING`, `VALIDATION_FAILED`
+- **New API endpoints**:
+  - `POST /validate/{adapter}` — returns validation findings with severity, check name, affected resource
+  - `POST /analyze/{adapter}` — returns strategy assignments (per-resource with rationale) + network allocation plan
+  - `GET /graph/{adapter}?format=dot` — returns dependency graph as JSON (nodes + edges) + optional Graphviz DOT string + execution order + parallel stages
+- **Updated endpoints**:
+  - `POST /execute/{adapter}?skip_validation=true` — override validation blocking
+  - `GET /status/{job_id}` — now includes `validation_errors`, `validation_warnings`, `strategy_summary`
+- **Translation service**: Accepts optional `StrategyResult` and `NetworkPlan`. Backward compatible — Phase 1 calls without these parameters still work identically.
+- **VPC model**: `VPCInstance.migration_strategy` field tracks which strategy produced each instance
 
 #### Validated
-- 34/34 API endpoint tests passed (both adapters, all Phase 2 endpoints)
-- 8/8 offline validation tests passed (graph, strategy, validation, network, cycle detection, error detection, conflict detection, Temporal imports)
+- 34/34 API endpoint tests passed (both adapters, all Phase 1 + Phase 2 endpoints)
+- 8/8 offline tests passed (full pipeline, graph DOT, backward compat, cycle detection, validation blocking, error detection, network conflicts, Temporal imports)
 - Full Phase 2 pipeline: discover → normalize → validate → analyze → translate → generate_terraform → migrate_data
 
 #### References
