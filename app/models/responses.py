@@ -40,6 +40,32 @@ class DiscoveryResponse(BaseModel):
     resource_count: int = Field(description="Total number of discovered resources")
 
 
+class TranslationResponse(BaseModel):
+    """Response from POST /plan/{adapter}."""
+
+    adapter: str = Field(description="Adapter that produced the canonical data")
+    vpc_name: str = Field(description="Target VPC name")
+    subnets: int = Field(description="Number of subnets planned")
+    instances: int = Field(description="Number of instances planned")
+    security_groups: int = Field(description="Number of security groups planned")
+    terraform_path: str = Field(description="Path to generated Terraform file")
+
+
+class JobResponse(BaseModel):
+    """Response from POST /execute and GET /status/{job_id}."""
+
+    job_id: str = Field(description="Unique job identifier")
+    adapter: str = Field(description="Adapter name")
+    status: str = Field(description="Current job status")
+    started_at: str = Field(description="ISO timestamp when job started")
+    completed_at: str | None = Field(default=None, description="ISO timestamp when job finished")
+    error: str | None = Field(default=None, description="Error message if failed")
+    resource_count: int = Field(default=0, description="Total resources discovered")
+    terraform_output: str | None = Field(default=None)
+    migration_output_dir: str | None = Field(default=None)
+    steps_completed: list[str] = Field(default_factory=list)
+
+
 class ErrorResponse(BaseModel):
     """Standard error response."""
 

@@ -12,6 +12,9 @@ build/
 # OS
 .DS_Store
 
+# Generated output
+output/
+
 # IDE
 .idea/
 .vscode/

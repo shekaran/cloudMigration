@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.2.0] - 2026-04-06 06:23 IST
+
+### Phase 1 — MVP (End-to-End Migration)
+
+#### Added
+- **VMware adapter**: Mock vSphere adapter with 3 VMs, 2 vSwitches, full normalization including cross-resource dependencies
+- **VPC target models**: Pydantic models for `VPCNetwork`, `VPCSubnet`, `VPCSecurityGroup`, `VPCInstance`, `VPCTranslationResult`
+- **Translation engine**: `TranslationService` converts canonical model to IBM VPC — OS image mapping, instance profile selection, CIDR-preserving subnet mapping, security group rule translation
+- **Terraform generator**: Jinja2-based `TerraformGenerator` produces valid `main.tf` with VPC, subnets, security groups, instances, volumes, and outputs
+- **Sequential orchestrator**: `MigrationOrchestrator` runs async jobs through discover → normalize → translate → terraform → mock data migration pipeline
+- **Mock data migration**: Writes per-VM rsync logs, disk inventories, and migration manifests to `output/migrations/{job_id}/`
+- **New API endpoints**: `POST /plan/{adapter}`, `POST /execute/{adapter}` (async), `GET /status/{job_id}`, `GET /jobs`
+- **CLI tool**: Typer-based `migrate` CLI with `adapters`, `discover`, `plan`, `execute`, `status`, `jobs` commands — hits running API via HTTP
+- **New response models**: `TranslationResponse`, `JobResponse` with full Pydantic validation
+
+#### Changed
+- `pyproject.toml`: Added Jinja2, Typer, httpx as dependencies; added `migrate` CLI entry point
+- `dependencies.py`: Extended with `TranslationService` and `MigrationOrchestrator` DI providers
+- `main.py`: Wires all Phase 1 services at startup; registers VMware adapter
+
+#### References
+- GitHub Issues: #2, #3, #4, #5, #6, #7, #25
+
+---
+
 ## [0.1.0] - 2026-04-05 22:54 IST
 
 ### Phase 0 — Foundation

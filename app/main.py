@@ -10,8 +10,12 @@ from app.adapters.registry import AdapterRegistry
 from app.api.dependencies import configure_services
 from app.api.routes.adapters import router as adapters_router
 from app.api.routes.discovery import router as discovery_router
+from app.api.routes.migration import router as migration_router
 from app.core.config import get_settings
 from app.services.discovery import DiscoveryService
+from app.services.orchestrator import MigrationOrchestrator
+from app.services.translation import TranslationService
+from app.terraform.generator import TerraformGenerator
 from app.utils.logging import setup_logging
 
 logger = structlog.get_logger(__name__)
@@ -20,6 +24,7 @@ logger = structlog.get_logger(__name__)
 # New adapters only need an entry here (or rely on auto-discovery).
 ADAPTER_CONFIG: dict[str, str] = {
     "ibm_classic": "app.adapters.ibm_classic.adapter.IBMClassicAdapter",
+    "vmware": "app.adapters.vmware.adapter.VMwareAdapter",
 }
 
 
@@ -38,9 +43,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     logger.info("adapters_loaded", adapters=registry.registered_adapters)
 
-    # Wire services into FastAPI dependency injection
+    # Build services
     discovery_service = DiscoveryService(registry)
-    configure_services(registry, discovery_service)
+    translation_service = TranslationService()
+    terraform_generator = TerraformGenerator()
+    orchestrator = MigrationOrchestrator(
+        registry=registry,
+        translation_service=translation_service,
+        terraform_generator=terraform_generator,
+    )
+
+    # Wire into FastAPI dependency injection
+    configure_services(registry, discovery_service, translation_service, orchestrator)
 
     yield
 
@@ -61,6 +75,7 @@ def create_app() -> FastAPI:
 
     app.include_router(discovery_router)
     app.include_router(adapters_router)
+    app.include_router(migration_router)
 
     return app
 
