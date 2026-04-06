@@ -1,5 +1,7 @@
 """Translation service — converts canonical model to IBM VPC target model."""
 
+from __future__ import annotations
+
 import structlog
 
 from app.models.canonical import ComputeResource, NetworkSegment, SecurityPolicy
@@ -12,6 +14,8 @@ from app.models.vpc import (
     VPCSubnet,
     VPCTranslationResult,
 )
+from app.services.network_planner import NetworkPlan
+from app.services.strategy import MigrationStrategy, StrategyResult
 
 logger = structlog.get_logger(__name__)
 
@@ -36,32 +40,60 @@ PROFILE_MAP: list[tuple[int, int, str]] = [
     (64, 256, "bx2-64x256"),
 ]
 
+# Replatform profiles — optimized instance types for stateful/complex workloads
+REPLATFORM_PROFILE_MAP: list[tuple[int, int, str]] = [
+    (2, 16, "mx2-2x16"),
+    (4, 32, "mx2-4x32"),
+    (8, 64, "mx2-8x64"),
+    (16, 128, "mx2-16x128"),
+    (32, 256, "mx2-32x256"),
+]
+
 
 class TranslationService:
-    """Translates canonical DiscoveredResources into IBM VPC target resources."""
+    """Translates canonical DiscoveredResources into IBM VPC target resources.
+
+    Supports strategy-aware translation — different strategies produce
+    different VPC configurations (e.g., replatform uses memory-optimized profiles).
+    Supports network plan — uses allocated CIDRs instead of source CIDRs.
+    """
 
     def __init__(self, vpc_name: str = "migration-vpc", region: str = "us-south") -> None:
         self._vpc_name = vpc_name
         self._region = region
 
-    def translate(self, canonical: DiscoveredResources) -> VPCTranslationResult:
+    def translate(
+        self,
+        canonical: DiscoveredResources,
+        strategy_result: StrategyResult | None = None,
+        network_plan: NetworkPlan | None = None,
+    ) -> VPCTranslationResult:
         """Convert canonical resources to a complete VPC translation result.
 
         Args:
             canonical: Normalized resources from discovery.
+            strategy_result: Optional strategy assignments. If None, all resources
+                use lift-and-shift.
+            network_plan: Optional network allocation plan. If None, source CIDRs
+                are preserved (Phase 1 behavior).
 
         Returns:
             VPCTranslationResult with VPC, subnets, security groups, and instances.
         """
         logger.info("translation_started", resource_count=canonical.resource_count)
 
-        vpc = self._create_vpc(canonical)
-        subnets = self._translate_networks(canonical.networks, vpc.id)
+        vpc = self._create_vpc(canonical, network_plan)
+        subnets = self._translate_networks(canonical.networks, vpc.id, network_plan)
         security_groups = self._translate_security_policies(
             canonical.security_policies, vpc.id
         )
         instances = self._translate_compute(
-            canonical.compute, canonical.storage, vpc.id, subnets, security_groups
+            canonical.compute,
+            canonical.storage,
+            vpc.id,
+            subnets,
+            security_groups,
+            strategy_result,
         )
 
         result = VPCTranslationResult(
@@ -79,10 +111,15 @@ class TranslationService:
         )
         return result
 
-    def _create_vpc(self, canonical: DiscoveredResources) -> VPCNetwork:
+    def _create_vpc(
+        self,
+        canonical: DiscoveredResources,
+        network_plan: NetworkPlan | None,
+    ) -> VPCNetwork:
         """Create the target VPC resource."""
-        # Use the first network's CIDR as address prefix, or a default
-        if canonical.networks:
+        if network_plan:
+            prefix = network_plan.vpc_cidr
+        elif canonical.networks:
             prefix = canonical.networks[0].cidr
         else:
             prefix = "10.240.0.0/16"
@@ -94,10 +131,53 @@ class TranslationService:
         )
 
     def _translate_networks(
-        self, networks: list[NetworkSegment], vpc_id: "__builtins__"
+        self,
+        networks: list[NetworkSegment],
+        vpc_id,
+        network_plan: NetworkPlan | None,
     ) -> list[VPCSubnet]:
-        """Map source network segments (VLANs, vSwitches) to VPC subnets."""
-        subnets: list[VPCSubnet] = []
+        """Map source network segments to VPC subnets.
+
+        If a network plan is provided, uses allocated target CIDRs and zones.
+        Otherwise falls back to Phase 1 behavior (source CIDRs preserved).
+        """
+        if network_plan and network_plan.allocations:
+            # Use network plan allocations
+            alloc_by_source = {
+                a.source_network_id: a for a in network_plan.allocations
+            }
+            subnets: list[VPCSubnet] = []
+            for net in networks:
+                alloc = alloc_by_source.get(str(net.id))
+                if alloc:
+                    subnets.append(
+                        VPCSubnet(
+                            name=f"subnet-{net.name}".lower().replace(" ", "-"),
+                            vpc_id=vpc_id,
+                            zone=alloc.target_zone,
+                            region=self._region,
+                            ipv4_cidr_block=alloc.target_cidr,
+                            public_gateway=net.metadata.get("network_space") == "PUBLIC",
+                            source_network_name=net.name,
+                        )
+                    )
+                else:
+                    # Fallback for unallocated networks
+                    subnets.append(
+                        VPCSubnet(
+                            name=f"subnet-{net.name}".lower().replace(" ", "-"),
+                            vpc_id=vpc_id,
+                            zone=f"{self._region}-1",
+                            region=self._region,
+                            ipv4_cidr_block=net.cidr,
+                            public_gateway=net.metadata.get("network_space") == "PUBLIC",
+                            source_network_name=net.name,
+                        )
+                    )
+            return subnets
+
+        # Phase 1 fallback: preserve source CIDRs
+        subnets = []
         for i, net in enumerate(networks):
             zone = f"{self._region}-{(i % 3) + 1}"
             subnets.append(
@@ -114,13 +194,9 @@ class TranslationService:
         return subnets
 
     def _translate_security_policies(
-        self, policies: list[SecurityPolicy], vpc_id: "UUID"
+        self, policies: list[SecurityPolicy], vpc_id
     ) -> list[VPCSecurityGroup]:
-        """Map source firewall/security policies to VPC security groups.
-
-        Each SecurityPolicy (grouped model) becomes one VPC security group.
-        Its SecurityRule sub-objects become VPCSecurityGroupRule entries.
-        """
+        """Map source firewall/security policies to VPC security groups."""
         if not policies:
             return []
 
@@ -160,29 +236,55 @@ class TranslationService:
         self,
         compute: list[ComputeResource],
         storage: list,
-        vpc_id: "UUID",
+        vpc_id,
         subnets: list[VPCSubnet],
         security_groups: list[VPCSecurityGroup],
+        strategy_result: StrategyResult | None = None,
     ) -> list[VPCInstance]:
-        """Map source VMs to VPC instances."""
+        """Map source VMs to VPC instances.
+
+        Strategy-aware: replatform VMs get memory-optimized profiles and larger
+        boot volumes. Rebuild VMs get fresh minimal instances.
+        """
         if not subnets:
             return []
 
         sg_ids = [sg.id for sg in security_groups]
 
-        # Build a lookup: source VM name → list of data volume sizes
+        # Build volume lookup
         volume_map: dict[str, list[int]] = {}
         for vol in storage:
-            # attached_to may be a classic_id or vm_id string
-            hostname = vol.metadata.get("hostname", "") or vol.name.rsplit("-", 1)[0]
+            hostname = vol.metadata.get("hostname", "") or vol.metadata.get("vm_name", "") or vol.name.rsplit("-", 1)[0]
             volume_map.setdefault(hostname, []).append(vol.size_gb)
 
         instances: list[VPCInstance] = []
         for i, vm in enumerate(compute):
             subnet = subnets[i % len(subnets)]
-            profile = self._select_profile(vm.cpu, vm.memory_gb)
-            image = self._select_image(vm.os)
             data_volumes = volume_map.get(vm.name, [])
+
+            # Determine strategy for this VM
+            vm_strategy = MigrationStrategy.LIFT_AND_SHIFT
+            if strategy_result:
+                vm_strategy = strategy_result.assignments.get(
+                    str(vm.id), MigrationStrategy.LIFT_AND_SHIFT
+                )
+
+            # Strategy-specific translation
+            if vm_strategy == MigrationStrategy.REPLATFORM:
+                # Replatform: memory-optimized profiles, larger boot volume
+                profile = self._select_profile_replatform(vm.cpu, vm.memory_gb)
+                boot_gb = max(vm.storage_gb or 100, 200)  # minimum 200GB for replatform
+            elif vm_strategy == MigrationStrategy.REBUILD:
+                # Rebuild: minimal fresh instance, no data volumes carried over
+                profile = self._select_profile(vm.cpu, vm.memory_gb)
+                boot_gb = 100
+                data_volumes = []  # rebuild doesn't carry data volumes
+            else:
+                # Lift-and-shift: direct mapping
+                profile = self._select_profile(vm.cpu, vm.memory_gb)
+                boot_gb = vm.storage_gb or 100
+
+            image = self._select_image(vm.os)
 
             instances.append(
                 VPCInstance(
@@ -193,21 +295,30 @@ class TranslationService:
                     region=self._region,
                     profile=profile,
                     image=image,
-                    boot_volume_gb=vm.storage_gb or 100,
+                    boot_volume_gb=boot_gb,
                     data_volumes=data_volumes,
                     security_group_ids=sg_ids,
                     source_vm_name=vm.name,
+                    migration_strategy=vm_strategy.value,
                 )
             )
         return instances
 
     @staticmethod
     def _select_profile(cpu: int, memory_gb: int) -> str:
-        """Find the smallest VPC profile that fits the requested CPU and memory."""
+        """Find the smallest standard VPC profile that fits."""
         for p_cpu, p_mem, profile_name in PROFILE_MAP:
             if p_cpu >= cpu and p_mem >= memory_gb:
                 return profile_name
-        return PROFILE_MAP[-1][2]  # largest available
+        return PROFILE_MAP[-1][2]
+
+    @staticmethod
+    def _select_profile_replatform(cpu: int, memory_gb: int) -> str:
+        """Find the smallest memory-optimized VPC profile that fits (for replatform)."""
+        for p_cpu, p_mem, profile_name in REPLATFORM_PROFILE_MAP:
+            if p_cpu >= cpu and p_mem >= memory_gb:
+                return profile_name
+        return REPLATFORM_PROFILE_MAP[-1][2]
 
     @staticmethod
     def _select_image(os_string: str) -> str:
@@ -216,4 +327,4 @@ class TranslationService:
         for key, image in OS_IMAGE_MAP.items():
             if key in os_lower:
                 return image
-        return "ibm-ubuntu-22-04-4-minimal-amd64-1"  # default fallback
+        return "ibm-ubuntu-22-04-4-minimal-amd64-1"

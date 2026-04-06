@@ -1,0 +1,28 @@
+# Temporal server for migration workflow orchestration
+# Usage: docker compose -f docker-compose.temporal.yml up -d
+#
+# Web UI: http://localhost:8233
+# gRPC:   localhost:7233
+
+services:
+  temporal:
+    image: temporalio/auto-setup:latest
+    ports:
+      - "7233:7233"    # gRPC frontend
+    environment:
+      - DB=sqlite
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    volumes:
+      - temporal-data:/var/lib/temporal
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    ports:
+      - "8233:8080"    # Web UI
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    depends_on:
+      - temporal
+
+volumes:
+  temporal-data:

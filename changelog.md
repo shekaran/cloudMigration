@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.4.0] - 2026-04-06 23:15 IST
+
+### Phase 2 — Orchestration & Intelligence
+
+Phase 2 adds dependency graph analysis, strategy-aware translation, pre-migration validation, intelligent network planning, and Temporal workflow integration.
+
+#### Added
+- **Dependency Graph Engine** (`app/graph/engine.py`): Directed graph from `ResourceDependency` objects, topological sort (Kahn's algorithm), cycle detection (DFS), parallel execution stages, JSON export, Graphviz DOT visualization with color-coded node types and edge styles. Issue #9.
+- **Strategy Engine** (`app/services/strategy.py`): Classifies workloads into `lift_and_shift`, `replatform`, `rebuild`, `kubernetes_migration` based on statefulness, resource sizing, OS complexity, dependency count. Strategy changes translation output — replatform VMs get memory-optimized profiles (`mx2` family) and larger boot volumes. Issue #10.
+- **Validation Engine** (`app/services/validation.py`): Pre-migration checks with ERROR/WARNING/INFO severity levels. Checks: OS compatibility, CPU/memory limits, NIC count, CIDR format, CIDR overlap, security rule limits, storage limits, orphaned volumes, cyclic dependencies, dangling UUID references. Default blocks execution; overridable with `skip_validation=true`. Issue #11.
+- **Network Planner v1** (`app/services/network_planner.py`): Allocates fresh CIDRs from configurable target VPC range (default `10.240.0.0/16`), preserves subnet sizing (prefix length), round-robin zone distribution, conflict detection (overlap, exhaustion, sizing). Issue #28.
+- **Temporal Workflow Integration**: `MigrationWorkflow` with 6 activities (discover, normalize, validate, analyze, translate, migrate_data), retry policy (3 attempts, exponential backoff), workflow queries for current step and progress, Temporal worker with task queue. `docker-compose.temporal.yml` for server setup. Issue #8.
+- **New API endpoints**: `POST /validate/{adapter}`, `POST /analyze/{adapter}` (strategy + network plan), `GET /graph/{adapter}?format=dot` (dependency graph with Graphviz DOT)
+- **Execution pipeline**: 7-step pipeline — discover → normalize → validate → analyze → translate → generate_terraform → migrate_data
+- `VPCInstance.migration_strategy` field for strategy-aware Terraform output
+- `JobResponse` extended with `validation_errors`, `validation_warnings`, `strategy_summary`
+- `POST /execute/{adapter}?skip_validation=true` to override validation blocking
+
+#### Changed
+- **TranslationService**: Accepts optional `StrategyResult` and `NetworkPlan`. Replatform VMs get `mx2-*` profiles and 200GB+ boot volumes. Network plan CIDRs replace source CIDRs. Backward compatible — Phase 1 calls still work.
+- **MigrationOrchestrator**: Integrates all Phase 2 engines. Pipeline expanded from 5 to 7 steps. New `VALIDATING`, `ANALYZING`, `VALIDATION_FAILED` job states.
+- **dependencies.py**: Extended with `StrategyEngine`, `ValidationEngine`, `NetworkPlanner` DI providers
+- **main.py**: Wires all Phase 2 engines at startup; registers analysis router
+- **pyproject.toml**: Added `temporalio>=1.24.0`; version bumped to 0.4.0
+
+#### Validated
+- 34/34 API endpoint tests passed (both adapters, all Phase 2 endpoints)
+- 8/8 offline validation tests passed (graph, strategy, validation, network, cycle detection, error detection, conflict detection, Temporal imports)
+- Full Phase 2 pipeline: discover → normalize → validate → analyze → translate → generate_terraform → migrate_data
+
+#### References
+- GitHub Issues: #8, #9, #10, #11, #28
+
+---
+
 ## [0.3.0] - 2026-04-06 19:45 IST
 
 ### Phase 1 Complete — MVP End-to-End Migration

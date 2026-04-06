@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "migration-orchestration-engine"
-version = "0.1.0"
+version = "0.4.0"
 description = "Multi-Platform Migration Orchestration Engine to IBM Cloud VPC"
 requires-python = ">=3.10"
 dependencies = [
@@ -17,6 +17,7 @@ dependencies = [
     "Jinja2>=3.1.0",
     "typer[all]>=0.9.0",
     "httpx>=0.27.0",
+    "temporalio>=1.24.0",
 ]
 
 [project.scripts]

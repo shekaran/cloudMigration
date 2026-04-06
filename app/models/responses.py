@@ -64,6 +64,11 @@ class JobResponse(BaseModel):
     terraform_output: str | None = Field(default=None)
     migration_output_dir: str | None = Field(default=None)
     steps_completed: list[str] = Field(default_factory=list)
+    validation_errors: int = Field(default=0, description="Number of validation errors")
+    validation_warnings: int = Field(default=0, description="Number of validation warnings")
+    strategy_summary: dict[str, int] = Field(
+        default_factory=dict, description="Strategy → resource count"
+    )
 
 
 class ErrorResponse(BaseModel):

@@ -77,18 +77,23 @@ async def plan_migration(
 )
 async def execute_migration(
     adapter_name: str,
+    skip_validation: bool = False,
     registry: AdapterRegistry = Depends(get_adapter_registry),
     orchestrator: MigrationOrchestrator = Depends(get_orchestrator),
 ) -> JobResponse:
     """Start an async migration job for the given adapter.
 
     Returns immediately with a job_id. Poll GET /status/{job_id} for progress.
+
+    Args:
+        skip_validation: If True, validation errors won't block execution.
+            All errors will be reported in the job output.
     """
     # Validate adapter exists before creating job
     if adapter_name not in registry.registered_adapters:
         raise HTTPException(status_code=404, detail=f"Adapter not found: '{adapter_name}'")
 
-    job = await orchestrator.execute(adapter_name)
+    job = await orchestrator.execute(adapter_name, skip_validation=skip_validation)
     return _job_to_response(job)
 
 
@@ -137,4 +142,7 @@ def _job_to_response(job) -> JobResponse:
         terraform_output=job.terraform_output,
         migration_output_dir=job.migration_output_dir,
         steps_completed=job.steps_completed,
+        validation_errors=job.validation_errors,
+        validation_warnings=job.validation_warnings,
+        strategy_summary=job.strategy_summary,
     )

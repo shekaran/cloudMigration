@@ -9,19 +9,22 @@ from fastapi import FastAPI
 from app.adapters.registry import AdapterRegistry
 from app.api.dependencies import configure_services
 from app.api.routes.adapters import router as adapters_router
+from app.api.routes.analysis import router as analysis_router
 from app.api.routes.discovery import router as discovery_router
 from app.api.routes.migration import router as migration_router
 from app.core.config import get_settings
 from app.services.discovery import DiscoveryService
+from app.services.network_planner import NetworkPlanner
 from app.services.orchestrator import MigrationOrchestrator
+from app.services.strategy import StrategyEngine
 from app.services.translation import TranslationService
+from app.services.validation import ValidationEngine
 from app.terraform.generator import TerraformGenerator
 from app.utils.logging import setup_logging
 
 logger = structlog.get_logger(__name__)
 
 # Default adapter config — maps name → dotted class path.
-# New adapters only need an entry here (or rely on auto-discovery).
 ADAPTER_CONFIG: dict[str, str] = {
     "ibm_classic": "app.adapters.ibm_classic.adapter.IBMClassicAdapter",
     "vmware": "app.adapters.vmware.adapter.VMwareAdapter",
@@ -47,14 +50,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     discovery_service = DiscoveryService(registry)
     translation_service = TranslationService()
     terraform_generator = TerraformGenerator()
+
+    # Phase 2 engines
+    strategy_engine = StrategyEngine()
+    validation_engine = ValidationEngine()
+    network_planner = NetworkPlanner()
+
     orchestrator = MigrationOrchestrator(
         registry=registry,
         translation_service=translation_service,
         terraform_generator=terraform_generator,
+        strategy_engine=strategy_engine,
+        validation_engine=validation_engine,
+        network_planner=network_planner,
     )
 
     # Wire into FastAPI dependency injection
-    configure_services(registry, discovery_service, translation_service, orchestrator)
+    configure_services(
+        registry,
+        discovery_service,
+        translation_service,
+        orchestrator,
+        strategy_engine=strategy_engine,
+        validation_engine=validation_engine,
+        network_planner=network_planner,
+    )
 
     yield
 
@@ -68,7 +88,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Migration Orchestration Engine",
         description="Multi-Platform Migration Orchestration Engine to IBM Cloud VPC",
-        version="0.1.0",
+        version="0.4.0",
         lifespan=lifespan,
         debug=settings.app_debug,
     )
@@ -76,6 +96,7 @@ def create_app() -> FastAPI:
     app.include_router(discovery_router)
     app.include_router(adapters_router)
     app.include_router(migration_router)
+    app.include_router(analysis_router)
 
     return app
 

@@ -59,6 +59,7 @@ class VPCInstance(VPCResource):
     data_volumes: list[int] = Field(default_factory=list, description="Data volume sizes in GB")
     security_group_ids: list[UUID] = Field(default_factory=list)
     source_vm_name: str = Field(default="", description="Original source VM name")
+    migration_strategy: str = Field(default="lift_and_shift", description="Assigned migration strategy")
 
 
 class VPCTranslationResult(BaseModel):
