@@ -301,6 +301,83 @@ All resources inherit from `BaseResource` and include:
 | spec      | dict        | {}        | Resource spec as raw dict            |
 | replicas  | int or null | null      | Desired replica count                |
 
+## 10.3 Notes
+
+* K8s workloads (Deployments, StatefulSets) are normalized as `KubernetesResource`
+* K8s Services are normalized as `NetworkSegment` (LoadBalancer → type=VPC, ClusterIP → type=SUBNET)
+* K8s PVCs are normalized as `StorageVolume` with storage class and access modes in metadata
+* Cross-references: workloads → PVCs via volume mounts, workloads → services via selector match
+
+---
+
+# 10A. K8s Target Models
+
+Target-side models for Kubernetes migration (IKS and OpenShift).
+
+## 10A.1 K8sTargetPlatform (enum)
+
+* `iks` — IBM Kubernetes Service
+* `openshift` — Red Hat OpenShift on IBM Cloud
+
+## 10A.2 K8sTargetCluster
+
+| Field              | Type              | Default   | Description                          |
+| ------------------ | ----------------- | --------- | ------------------------------------ |
+| name               | string            | required  | Target cluster name                  |
+| platform           | K8sTargetPlatform | required  | IKS or OpenShift                     |
+| region             | string            | required  | Target region (e.g. us-south)        |
+| version            | string            | ""        | K8s version                          |
+| worker_pool_flavor | string            | ""        | Worker node machine type             |
+| worker_count       | int               | 3         | Number of worker nodes               |
+
+## 10A.3 K8sTargetWorkload
+
+| Field     | Type   | Default  | Description                          |
+| --------- | ------ | -------- | ------------------------------------ |
+| name      | string | required | Workload name                        |
+| kind      | string | required | Deployment or StatefulSet            |
+| namespace | string | required | Target namespace                     |
+| replicas  | int    | 1        | Desired replica count                |
+| manifest  | dict   | required | Full K8s manifest as dict            |
+
+## 10A.4 K8sTargetService
+
+| Field        | Type       | Default  | Description                          |
+| ------------ | ---------- | -------- | ------------------------------------ |
+| name         | string     | required | Service name                         |
+| service_type | string     | required | ClusterIP, LoadBalancer, NodePort     |
+| ports        | list[dict] | []       | Port mappings                        |
+| manifest     | dict       | required | Full K8s manifest as dict            |
+
+## 10A.5 K8sTargetStorage
+
+| Field         | Type       | Default  | Description                          |
+| ------------- | ---------- | -------- | ------------------------------------ |
+| name          | string     | required | PVC name                             |
+| storage_class | string     | required | Target storage class (platform-specific) |
+| size          | string     | required | Storage size (e.g. "50Gi")           |
+| access_modes  | list[str]  | []       | Access modes (ReadWriteOnce, etc.)   |
+| manifest      | dict       | required | Full K8s manifest as dict            |
+
+## 10A.6 Storage Class Mapping
+
+| Source Class     | IKS Target                     | OpenShift Target                  |
+| ---------------- | ------------------------------ | --------------------------------- |
+| standard         | ibmc-vpc-block-5iops-tier      | ocs-storagecluster-ceph-rbd       |
+| fast-ssd         | ibmc-vpc-block-10iops-tier     | ocs-storagecluster-ceph-rbd       |
+| premium          | ibmc-vpc-block-10iops-tier     | ocs-storagecluster-ceph-rbd       |
+| gp2 / gp3        | ibmc-vpc-block-5iops-tier      | ocs-storagecluster-ceph-rbd       |
+
+## 10A.7 K8sTranslationResult
+
+| Field      | Type                    | Description                     |
+| ---------- | ----------------------- | ------------------------------- |
+| cluster    | K8sTargetCluster        | Target cluster configuration    |
+| namespaces | list[K8sTargetNamespace]| Target namespaces               |
+| workloads  | list[K8sTargetWorkload] | Translated workload manifests   |
+| services   | list[K8sTargetService]  | Translated service manifests    |
+| storage    | list[K8sTargetStorage]  | Translated PVC manifests        |
+
 ---
 
 # 11. Relationships

@@ -81,14 +81,17 @@ Each adapter must implement:
 
 ---
 
-### Supported Adapters
+### Supported Adapters (Implemented)
 
-* IBM Classic Adapter
-* VMware Adapter
+* IBM Classic Adapter — SoftLayer VSIs, VLANs, firewall rules, storage volumes
+* VMware Adapter — vSphere VMs, vSwitches, NSX-T segments, DFW firewall rules
+* Kubernetes Adapter — Deployments, StatefulSets, Services, PVCs, ConfigMaps
+
+### Planned Adapters
+
 * Hyper-V Adapter
 * Bare Metal Adapter
 * Firewall Adapter
-* Kubernetes Adapter
 
 ---
 
@@ -169,33 +172,51 @@ Determine execution order of resources.
 
 ### Purpose
 
-Convert canonical model → IBM VPC model
+Convert canonical model → target platform model.
+
+Two translation paths exist:
+
+1. **VM Translation** — Canonical → IBM VPC model (subnets, security groups, VSIs)
+2. **K8s Translation** — Canonical → IKS or OpenShift model (workloads, services, storage)
 
 ---
 
-### Responsibilities
+### VM Translation Responsibilities
 
-* Map compute resources
-* Map networking constructs
-* Map security rules
+* Map compute resources → VPC instances (profile selection, OS image mapping)
+* Map networking constructs → VPC subnets (CIDR allocation)
+* Map security rules → VPC security groups (rule normalization)
+* Apply migration strategy (lift_and_shift, replatform, rebuild)
+
+### K8s Translation Responsibilities
+
+* Map workloads → target Deployments/StatefulSets with platform-specific manifests
+* Map services → target Services (OpenShift converts LoadBalancer → ClusterIP + Routes)
+* Map PVCs → target storage with platform-specific storage class mapping
+* Rewrite container image registries (IKS: `us.icr.io/migration`, OpenShift: internal registry)
 
 ---
 
 ### Key Transformations
 
-| Source               | Target          |
-| -------------------- | --------------- |
-| VLAN / NSX / vSwitch | Subnet          |
-| Firewall rules       | Security Groups |
-| VM                   | VPC VSI         |
+| Source               | VM Target       | K8s Target              |
+| -------------------- | --------------- | ----------------------- |
+| VLAN / NSX / vSwitch | Subnet          | —                       |
+| Firewall rules       | Security Groups | —                       |
+| VM                   | VPC VSI         | —                       |
+| Deployment           | —               | IKS/OpenShift Workload  |
+| Service              | —               | IKS/OpenShift Service   |
+| PVC                  | —               | IKS/OpenShift Storage   |
 
 ---
 
 ### Requirements
 
-* CIDR allocation logic
+* CIDR allocation logic (VM path)
 * Conflict detection
 * Rule normalization
+* Platform-specific storage class mapping (K8s path)
+* Image registry rewriting (K8s path)
 
 ---
 
@@ -236,19 +257,44 @@ Decide how each workload should be migrated.
 
 ### Strategies
 
-* lift_and_shift
-* replatform
-* rebuild
-* kubernetes_migration
+* `lift_and_shift` — direct migration with minimal changes (standard profiles)
+* `replatform` — migration with platform optimization (memory-optimized profiles, larger volumes)
+* `rebuild` — fresh provisioning (minimal instance, no data carried over)
+* `kubernetes_migration` — routed to K8s pipeline (backup → translate → restore)
 
 ---
 
 ### Decision Inputs
 
-* Resource type
-* Platform
+* Resource type (VM, baremetal, container)
+* Platform and OS complexity (Windows/SLES/AIX trigger replatform)
 * Statefulness
-* Dependencies
+* Dependency count (critical resources with 3+ dependents)
+* CPU/memory sizing
+
+---
+
+## 3.7.1 Containerization Recommender
+
+### Purpose
+
+Evaluate VMs for containerization suitability (advisory only, does not change migration path).
+
+### Scoring Factors (0-100)
+
+* OS compatibility (+15 for Linux, -30 for Windows/AIX)
+* Statefulness (+15 for stateless, -10 for stateful)
+* Resource sizing (+10 for small, -5 for large)
+* Tier classification (+10 for web tier, -5 for db tier)
+* Storage complexity (-10 for >500GB)
+* Bare metal (-20)
+
+### Fitness Levels
+
+* `EXCELLENT` (>=75) — strong containerization candidate
+* `GOOD` (>=55) — viable with moderate effort
+* `POSSIBLE` (>=35) — requires refactoring
+* `NOT_RECOMMENDED` (<35 or blockers) — keep as VM
 
 ---
 
@@ -285,34 +331,57 @@ Temporal
 
 ### Components
 
-* Data Migration Module
-* Kubernetes Migration Module
-* Firewall Translation Module
+* **Data Migration Module** — rsync-based VM data transfer with per-VM logs and disk inventories
+* **Kubernetes Migration Module** — Velero-like backup/restore with PVC snapshots and restore validation
+* **Firewall Translation Module** — rule normalization, conflict resolution (most-specific-wins), tier classification
+
+---
+
+### Kubernetes Migration Pipeline
+
+1. **Backup** — capture workload specs, service specs, PVC snapshots → write to disk
+2. **Translate** — generate target manifests (IKS or OpenShift) with platform-specific mappings
+3. **Restore** — write translated manifests to target directory structure
+4. **Validate** — 6 check types: namespace coverage, workload coverage, replica counts, PVC coverage, storage size, service coverage
 
 ---
 
 ### Responsibilities
 
 * Perform actual migration steps
-* Execute data transfer
+* Execute data transfer (VM) or manifest generation (K8s)
 * Handle system-specific operations
+* Validate migration completeness
 
 ---
 
 # 4. Data Flow
 
-## Step-by-Step Flow
+## VM Pipeline Flow
 
 1. API receives migration request
-2. Adapter performs discovery
+2. Adapter performs discovery (IBM Classic or VMware)
 3. Data normalized into canonical model
 4. Dependency graph constructed
-5. Translation engine generates target model
-6. Terraform generated
-7. Orchestrator executes workflows
-8. Migration executed
-9. Validation performed
-10. Cutover completed
+5. Pre-migration validation (32 checks)
+6. Strategy analysis + firewall analysis + network planning
+7. Translation engine generates VPC target model
+8. Terraform generated
+9. Data migration executed (rsync simulation)
+10. Containerization recommendations generated (advisory)
+
+## K8s Pipeline Flow
+
+1. API receives migration request
+2. Kubernetes adapter discovers workloads
+3. Data normalized into canonical model
+4. Dependency graph constructed
+5. Pre-migration validation
+6. Strategy analysis
+7. Backup created (workload specs + PVC snapshots)
+8. K8s translation to IKS or OpenShift manifests
+9. Restore manifests written to target directory
+10. Restore validation (namespace, workload, PVC, service coverage)
 
 ---
 
