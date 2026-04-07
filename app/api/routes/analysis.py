@@ -1,9 +1,10 @@
-"""Analysis API routes — graph, strategy, validation, and network planning endpoints."""
+"""Analysis API routes — graph, strategy, validation, firewall, and network planning endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.dependencies import (
     get_discovery_service,
+    get_firewall_engine,
     get_graph_service,
     get_network_planner,
     get_strategy_engine,
@@ -13,6 +14,7 @@ from app.core.exceptions import AdapterDiscoveryError, AdapterNotFoundError
 from app.graph.engine import DependencyGraph, build_graph
 from app.models.responses import ErrorResponse
 from app.services.discovery import DiscoveryService
+from app.services.firewall_engine import FirewallEngine
 from app.services.network_planner import NetworkPlan, NetworkPlanner
 from app.services.strategy import StrategyEngine, StrategyResult
 from app.services.validation import ValidationEngine, ValidationResult
@@ -60,10 +62,12 @@ async def analyze_resources(
     discovery_svc: DiscoveryService = Depends(get_discovery_service),
     strategy_engine: StrategyEngine = Depends(get_strategy_engine),
     network_planner: NetworkPlanner = Depends(get_network_planner),
+    firewall_engine: FirewallEngine = Depends(get_firewall_engine),
 ) -> dict:
-    """Run strategy analysis and network planning on discovered resources.
+    """Run strategy analysis, firewall analysis, and network planning.
 
-    Returns strategy assignments per resource and network allocation plan.
+    Returns strategy assignments, firewall analysis (conflicts, normalized rules,
+    tier groupings), and network allocation plan with tier summaries.
     """
     try:
         discovery = await discovery_svc.run(adapter_name)
@@ -74,12 +78,47 @@ async def analyze_resources(
 
     graph = build_graph(discovery.normalized)
     strategy_result = strategy_engine.analyze(discovery.normalized, graph)
-    network_plan = network_planner.plan(discovery.normalized.networks)
+    firewall_result = firewall_engine.analyze(discovery.normalized)
+    network_plan = network_planner.plan(
+        discovery.normalized.networks, discovery.normalized.compute
+    )
 
     return {
         "adapter": adapter_name,
         "strategy": strategy_result.model_dump(),
+        "firewall": firewall_result.model_dump(),
         "network_plan": network_plan.model_dump(),
+    }
+
+
+@router.post(
+    "/firewall/{adapter_name}",
+    responses={
+        404: {"model": ErrorResponse, "description": "Adapter not found"},
+        500: {"model": ErrorResponse, "description": "Firewall analysis failed"},
+    },
+)
+async def analyze_firewall(
+    adapter_name: str,
+    discovery_svc: DiscoveryService = Depends(get_discovery_service),
+    firewall_engine: FirewallEngine = Depends(get_firewall_engine),
+) -> dict:
+    """Run firewall rule analysis on discovered resources.
+
+    Returns normalized rules, conflicts (with resolutions), unsupported rules,
+    and rules grouped by tier.
+    """
+    try:
+        discovery = await discovery_svc.run(adapter_name)
+    except AdapterNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AdapterDiscoveryError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    result = firewall_engine.analyze(discovery.normalized)
+    return {
+        "adapter": adapter_name,
+        "firewall": result.model_dump(),
     }
 
 

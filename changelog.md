@@ -4,6 +4,81 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.5.0] - 2026-04-07 07:15 IST
+
+### Phase 3 — Network & Security Expansion
+
+Phase 3 adds VMware NSX-T support, a firewall translation engine with automatic conflict resolution, and tier-based network planning with configurable security zone mapping.
+
+#### 1. VMware NSX-T Support (`app/adapters/vmware/`) — Issue #12
+
+Extends the VMware adapter with NSX-T overlay segments and distributed firewall rules.
+
+- **NSX segments**: 3 overlay segments (Web-Prod, App-Prod, DB-Prod) with CIDRs, DHCP ranges, security tags (tier + zone scope)
+- **NSX distributed firewall**: 3 DFW sections (Web-Tier, App-Tier, DB-Tier) with 9 rules covering inter-tier traffic, deny rules, and replication
+- **Normalization**: `_normalize_nsx_segments()` maps NSX segments to canonical `NetworkSegment` (type=`nsx_segment`) with tier/zone metadata
+- **Firewall normalization**: `_normalize_nsx_firewall()` maps DFW sections to grouped `SecurityPolicy` models — resolves segment references to CIDRs, maps NSX actions (ALLOW/DROP) and directions (IN/OUT/IN_OUT)
+- **Cross-resource linking**: NSX segments linked to VMs via `connected_vms`, VMs get NSX segment UUIDs in `network_interfaces` and `security_groups`
+- **Discovery**: Logs NSX segment count and DFW section count alongside VM/vSwitch counts
+- **Total VMware resources**: 8 → 14 (3 VMs + 2 vSwitches + 3 NSX segments + 3 security policies + 3 storage volumes)
+
+#### 2. Firewall Translation Engine (`app/services/firewall_engine.py`) — Issue #13
+
+Normalizes, analyzes, and resolves conflicts in firewall rules from heterogeneous sources.
+
+- **Pipeline**: normalize → detect conflicts → resolve → consolidate → classify by tier
+- **Rule normalization**: Flattens all `SecurityPolicy` rules into `NormalizedRule` format with validated CIDRs, protocols, ports, actions, directions, tier classification
+- **Conflict detection**: Finds overlapping rules with contradictory actions — checks CIDR overlap, port overlap, protocol compatibility, direction match
+- **Conflict resolution**:
+  - `most_specific_wins` — higher CIDR prefix + specific port + specific protocol beats broader rules
+  - `explicit_deny_wins` — deny takes precedence when specificity is equal
+  - `unresolvable` — flagged for manual review when rules are equally specific with opposing actions
+- **Consolidation**: Removes exact duplicate rules (same CIDR, protocol, port, action, direction)
+- **Tier classification**: Groups rules by tier (web, app, db) inferred from policy name, policy tags, or rule metadata
+- **Unsupported detection**: Flags rules with invalid CIDRs or unsupported protocols
+- **VPC limits**: Tracks `MAX_RULES_PER_GROUP = 50` for security group rule count validation
+
+#### 3. Tier-Based Network Planning (`app/services/network_planner.py`) — Issue #14
+
+Enhances the network planner with tier-aware subnet allocation and configurable security zone mapping.
+
+- **Tier classification priority**:
+  1. Network's own tier tag (e.g., `tier:web` on NSX segment)
+  2. Security zone metadata mapped via `zone_tier_map` (dmz→web, trusted→app, restricted→db)
+  3. Tier inferred from connected compute resource tags (majority vote)
+  4. Network zone field
+- **Configurable zone → tier mapping**: `DEFAULT_ZONE_TIER_MAP` with override via `zone_tier_map` constructor parameter: `dmz→web`, `trusted→app`, `restricted→db`, `public→web`, `private→app`, `data→db`
+- **Tier-grouped allocation**: Networks sorted by tier (web, app, db) then by prefix length — same-tier subnets grouped together with independent zone round-robin per tier
+- **`SubnetAllocation` extended**: New `tier` and `security_zone` fields on each allocation
+- **`TierAllocation` summary**: Per-tier totals (subnet count, host capacity, allocated CIDRs)
+- **`NetworkPlan.tier_allocations`**: List of `TierAllocation` for tier-level reporting
+- **Compute-aware**: `plan()` now accepts optional `compute` parameter for tier inference from VM tags
+- **Backward compatible**: Phase 2 calls without `compute` parameter still work identically
+
+#### 4. Updated Pipeline & API
+
+- **Orchestrator pipeline enhanced**: Analyze step now runs firewall analysis alongside strategy and network planning
+- **New `MigrationJob` fields**: `firewall_conflicts`, `firewall_rules_consolidated`, `tier_summary`
+- **New API endpoint**:
+  - `POST /firewall/{adapter}` — returns firewall analysis (normalized rules, conflicts with resolutions, unsupported rules, rules grouped by tier)
+- **Updated endpoints**:
+  - `POST /analyze/{adapter}` — now returns `firewall` analysis alongside `strategy` and `network_plan` with tier allocations
+  - `GET /status/{job_id}` — now includes `firewall_conflicts`, `firewall_rules_consolidated`, `tier_summary`
+- **`JobResponse` extended**: New fields for firewall and tier reporting
+- **Dependencies wiring**: `FirewallEngine` added to DI container (`configure_services`, `get_firewall_engine`)
+
+#### Validated
+- 18/18 API endpoint tests passed (both adapters, all Phase 1 + Phase 2 + Phase 3 endpoints)
+- Full pipeline: discover → normalize → validate → analyze (strategy + firewall + network) → translate → generate_terraform → migrate_data
+- VMware: 14 resources discovered, 3 NSX segments, 3 security policies (13 firewall rules), 3 tiers (web/app/db), 3 conflicts auto-resolved
+- IBM Classic: 9 resources, backward compatible (2 firewall rules, 0 conflicts)
+- Tier-based allocation: web=2 subnets, app=2 subnets, db=1 subnet with correct security zone mapping
+
+#### References
+- GitHub Issues: #12, #13, #14
+
+---
+
 ## [0.4.0] - 2026-04-06 23:15 IST
 
 ### Phase 2 — Orchestration & Intelligence

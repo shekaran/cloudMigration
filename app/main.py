@@ -14,6 +14,7 @@ from app.api.routes.discovery import router as discovery_router
 from app.api.routes.migration import router as migration_router
 from app.core.config import get_settings
 from app.services.discovery import DiscoveryService
+from app.services.firewall_engine import FirewallEngine
 from app.services.network_planner import NetworkPlanner
 from app.services.orchestrator import MigrationOrchestrator
 from app.services.strategy import StrategyEngine
@@ -56,6 +57,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     validation_engine = ValidationEngine()
     network_planner = NetworkPlanner()
 
+    # Phase 3 engines
+    firewall_engine = FirewallEngine()
+
     orchestrator = MigrationOrchestrator(
         registry=registry,
         translation_service=translation_service,
@@ -63,6 +67,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         strategy_engine=strategy_engine,
         validation_engine=validation_engine,
         network_planner=network_planner,
+        firewall_engine=firewall_engine,
     )
 
     # Wire into FastAPI dependency injection
@@ -74,6 +79,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         strategy_engine=strategy_engine,
         validation_engine=validation_engine,
         network_planner=network_planner,
+        firewall_engine=firewall_engine,
     )
 
     yield
@@ -88,7 +94,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Migration Orchestration Engine",
         description="Multi-Platform Migration Orchestration Engine to IBM Cloud VPC",
-        version="0.4.0",
+        version="0.5.0",
         lifespan=lifespan,
         debug=settings.app_debug,
     )

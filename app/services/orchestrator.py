@@ -14,6 +14,7 @@ from app.adapters.registry import AdapterRegistry
 from app.graph.engine import build_graph
 from app.models.responses import DiscoveredResources
 from app.models.vpc import VPCTranslationResult
+from app.services.firewall_engine import FirewallEngine
 from app.services.network_planner import NetworkPlanner
 from app.services.strategy import StrategyEngine
 from app.services.translation import TranslationService
@@ -57,6 +58,9 @@ class MigrationJob(BaseModel):
     validation_warnings: int = 0
     strategy_summary: dict[str, int] = Field(default_factory=dict)
     graph_dot: str | None = None
+    firewall_conflicts: int = 0
+    firewall_rules_consolidated: int = 0
+    tier_summary: dict[str, int] = Field(default_factory=dict)
 
 
 class MigrationOrchestrator:
@@ -74,6 +78,7 @@ class MigrationOrchestrator:
         strategy_engine: StrategyEngine | None = None,
         validation_engine: ValidationEngine | None = None,
         network_planner: NetworkPlanner | None = None,
+        firewall_engine: FirewallEngine | None = None,
         output_base_dir: str | Path = "output",
     ) -> None:
         self._registry = registry
@@ -82,6 +87,7 @@ class MigrationOrchestrator:
         self._strategy = strategy_engine or StrategyEngine()
         self._validation = validation_engine or ValidationEngine()
         self._network_planner = network_planner or NetworkPlanner()
+        self._firewall = firewall_engine or FirewallEngine()
         self._output_base = Path(output_base_dir)
         self._jobs: dict[UUID, MigrationJob] = {}
 
@@ -156,13 +162,19 @@ class MigrationOrchestrator:
                 )
                 return
 
-            # Step 4: Analyze (graph + strategy + network plan)
+            # Step 4: Analyze (graph + strategy + firewall + network plan)
             job.status = JobStatus.ANALYZING
             logger.info("pipeline_step", job_id=str(job.job_id), step="analyze")
             strategy_result = self._strategy.analyze(canonical, graph)
-            network_plan = self._network_planner.plan(canonical.networks)
+            firewall_result = self._firewall.analyze(canonical)
+            network_plan = self._network_planner.plan(canonical.networks, canonical.compute)
             job.strategy_summary = strategy_result.summary
             job.graph_dot = graph.to_dot()
+            job.firewall_conflicts = len(firewall_result.conflicts)
+            job.firewall_rules_consolidated = firewall_result.consolidated_count
+            job.tier_summary = {
+                t.tier: t.subnet_count for t in network_plan.tier_allocations
+            }
 
             execution_order = graph.topological_sort()
             stages = graph.parallel_stages()
@@ -172,6 +184,8 @@ class MigrationOrchestrator:
                 strategies=strategy_result.summary,
                 subnets_planned=len(network_plan.allocations),
                 execution_stages=len(stages),
+                firewall_conflicts=len(firewall_result.conflicts),
+                tiers=list(job.tier_summary.keys()),
             )
             job.steps_completed.append("analyze")
 
@@ -247,6 +261,9 @@ class MigrationOrchestrator:
             "validation_errors": job.validation_errors,
             "validation_warnings": job.validation_warnings,
             "strategy_summary": job.strategy_summary,
+            "firewall_conflicts": job.firewall_conflicts,
+            "firewall_rules_consolidated": job.firewall_rules_consolidated,
+            "tier_summary": job.tier_summary,
             "source_resources": {
                 "compute": len(canonical.compute),
                 "networks": len(canonical.networks),

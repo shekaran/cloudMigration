@@ -69,6 +69,11 @@ class JobResponse(BaseModel):
     strategy_summary: dict[str, int] = Field(
         default_factory=dict, description="Strategy → resource count"
     )
+    firewall_conflicts: int = Field(default=0, description="Number of firewall rule conflicts")
+    firewall_rules_consolidated: int = Field(default=0, description="Firewall rules after consolidation")
+    tier_summary: dict[str, int] = Field(
+        default_factory=dict, description="Tier → subnet count"
+    )
 
 
 class ErrorResponse(BaseModel):

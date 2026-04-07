@@ -2,6 +2,7 @@
 
 from app.adapters.registry import AdapterRegistry
 from app.services.discovery import DiscoveryService
+from app.services.firewall_engine import FirewallEngine
 from app.services.network_planner import NetworkPlanner
 from app.services.orchestrator import MigrationOrchestrator
 from app.services.strategy import StrategyEngine
@@ -15,6 +16,7 @@ _orchestrator: MigrationOrchestrator | None = None
 _strategy_engine: StrategyEngine | None = None
 _validation_engine: ValidationEngine | None = None
 _network_planner: NetworkPlanner | None = None
+_firewall_engine: FirewallEngine | None = None
 
 
 def configure_services(
@@ -25,10 +27,11 @@ def configure_services(
     strategy_engine: StrategyEngine | None = None,
     validation_engine: ValidationEngine | None = None,
     network_planner: NetworkPlanner | None = None,
+    firewall_engine: FirewallEngine | None = None,
 ) -> None:
     """Called once at app startup to wire service instances."""
     global _registry, _discovery_service, _translation_service, _orchestrator
-    global _strategy_engine, _validation_engine, _network_planner
+    global _strategy_engine, _validation_engine, _network_planner, _firewall_engine
     _registry = registry
     _discovery_service = discovery_service
     _translation_service = translation_service
@@ -36,6 +39,7 @@ def configure_services(
     _strategy_engine = strategy_engine
     _validation_engine = validation_engine
     _network_planner = network_planner
+    _firewall_engine = firewall_engine
 
 
 def get_adapter_registry() -> AdapterRegistry:
@@ -85,6 +89,13 @@ def get_network_planner() -> NetworkPlanner:
     if _network_planner is None:
         raise RuntimeError("NetworkPlanner not initialized — app startup incomplete")
     return _network_planner
+
+
+def get_firewall_engine() -> FirewallEngine:
+    """FastAPI dependency that provides the FirewallEngine."""
+    if _firewall_engine is None:
+        raise RuntimeError("FirewallEngine not initialized — app startup incomplete")
+    return _firewall_engine
 
 
 def get_graph_service():

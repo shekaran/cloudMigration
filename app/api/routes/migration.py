@@ -145,4 +145,7 @@ def _job_to_response(job) -> JobResponse:
         validation_errors=job.validation_errors,
         validation_warnings=job.validation_warnings,
         strategy_summary=job.strategy_summary,
+        firewall_conflicts=job.firewall_conflicts,
+        firewall_rules_consolidated=job.firewall_rules_consolidated,
+        tier_summary=job.tier_summary,
     )
