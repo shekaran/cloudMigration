@@ -1,0 +1,49 @@
+name: k8s-migration
+display_name: "Kubernetes to IBM IKS/OpenShift Migration"
+description: >
+  Migrate Kubernetes workloads to IBM Kubernetes Service (IKS) or
+  Red Hat OpenShift on IBM Cloud. Backs up workloads, translates
+  manifests, and restores to the target cluster.
+version: "1.0"
+category: kubernetes
+source_platform: kubernetes
+target_platform: ibm_iks
+
+parameters:
+  adapter: kubernetes
+  skip_validation: true
+  dry_run: false
+  strategy: kubernetes_migration
+  target_platform: iks
+  namespace_filter: ""
+  include_pvcs: true
+
+steps:
+  - name: discover
+    description: "Discover Kubernetes cluster resources"
+    action: discover
+    params:
+      adapter: "{{ adapter }}"
+
+  - name: validate
+    description: "Validate workload compatibility with IKS/OpenShift"
+    action: validate
+    params:
+      skip_on_error: "{{ skip_validation }}"
+
+  - name: execute
+    description: "Execute K8s migration (backup → translate → restore → validate)"
+    action: execute
+    params:
+      adapter: "{{ adapter }}"
+      skip_validation: "{{ skip_validation }}"
+      dry_run: "{{ dry_run }}"
+
+prerequisites:
+  - "Source cluster kubeconfig available"
+  - "IBM Cloud IKS/OpenShift cluster provisioned"
+  - "Target cluster kubeconfig configured"
+  - "Container registry accessible from target cluster"
+
+estimated_duration: "1-4 hours depending on workload count"
+risk_level: medium

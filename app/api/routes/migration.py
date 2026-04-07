@@ -78,6 +78,7 @@ async def plan_migration(
 async def execute_migration(
     adapter_name: str,
     skip_validation: bool = False,
+    dry_run: bool = False,
     registry: AdapterRegistry = Depends(get_adapter_registry),
     orchestrator: MigrationOrchestrator = Depends(get_orchestrator),
 ) -> JobResponse:
@@ -88,12 +89,13 @@ async def execute_migration(
     Args:
         skip_validation: If True, validation errors won't block execution.
             All errors will be reported in the job output.
+        dry_run: If True, simulate the migration without executing data transfer.
     """
     # Validate adapter exists before creating job
     if adapter_name not in registry.registered_adapters:
         raise HTTPException(status_code=404, detail=f"Adapter not found: '{adapter_name}'")
 
-    job = await orchestrator.execute(adapter_name, skip_validation=skip_validation)
+    job = await orchestrator.execute(adapter_name, skip_validation=skip_validation, dry_run=dry_run)
     return _job_to_response(job)
 
 
@@ -129,6 +131,47 @@ async def list_jobs(
     return [_job_to_response(j) for j in orchestrator.list_jobs()]
 
 
+@router.post(
+    "/resume/{job_id}",
+    response_model=JobResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Job not found"},
+        400: {"model": ErrorResponse, "description": "Job cannot be resumed"},
+    },
+)
+async def resume_migration(
+    job_id: str,
+    orchestrator: MigrationOrchestrator = Depends(get_orchestrator),
+) -> JobResponse:
+    """Resume a failed migration from its last checkpoint.
+
+    Loads the persisted migration plan and continues from the last
+    completed stage.
+    """
+    try:
+        uid = UUID(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid job_id: {job_id}") from exc
+
+    job = orchestrator.get_job(uid)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    if job.status.value not in ("failed", "validation_failed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job cannot be resumed — current status: {job.status.value}",
+        )
+
+    # Re-execute (the data migration service will load the persisted plan and resume)
+    new_job = await orchestrator.execute(
+        job.adapter_name,
+        skip_validation=job.skip_validation,
+        dry_run=job.dry_run,
+    )
+    return _job_to_response(new_job)
+
+
 def _job_to_response(job) -> JobResponse:
     """Convert a MigrationJob to its API response model."""
     return JobResponse(
@@ -159,4 +202,12 @@ def _job_to_response(job) -> JobResponse:
         db_replications=job.db_replications,
         migration_hooks_executed=job.migration_hooks_executed,
         rollback_checkpoints=job.rollback_checkpoints,
+        dry_run=job.dry_run,
+        checksums_verified=job.checksums_verified,
+        checksums_passed=job.checksums_passed,
+        replication_converged=job.replication_converged,
+        continuous_sync_iterations=job.continuous_sync_iterations,
+        parallel_volumes_synced=job.parallel_volumes_synced,
+        estimated_downtime_seconds=job.estimated_downtime_seconds,
+        cutover_ready=job.cutover_ready,
     )

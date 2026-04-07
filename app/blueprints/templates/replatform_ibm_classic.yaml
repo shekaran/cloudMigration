@@ -1,0 +1,58 @@
+name: replatform-ibm-classic
+display_name: "IBM Classic Infrastructure to VPC Replatform"
+description: >
+  Migrate IBM Classic bare metal and virtual servers to IBM Cloud VPC
+  with platform-optimized configurations. Leverages VPC-native features
+  like security groups, floating IPs, and block storage.
+version: "1.0"
+category: replatform
+source_platform: ibm_classic
+target_platform: ibm_vpc
+
+parameters:
+  adapter: ibm_classic
+  skip_validation: false
+  dry_run: false
+  strategy: replatform
+  sync_mode: database
+  parallel_sync: true
+  max_concurrent_syncs: 6
+  continuous_sync: true
+  convergence_threshold_mb: 25
+  max_downtime_seconds: 180
+
+steps:
+  - name: discover
+    description: "Discover IBM Classic infrastructure"
+    action: discover
+    params:
+      adapter: "{{ adapter }}"
+
+  - name: validate
+    description: "Run pre-migration validation with VPC compatibility checks"
+    action: validate
+    params:
+      skip_on_error: "{{ skip_validation }}"
+
+  - name: plan
+    description: "Generate VPC-optimized migration plan"
+    action: plan
+    params:
+      adapter: "{{ adapter }}"
+
+  - name: execute
+    description: "Execute replatform migration"
+    action: execute
+    params:
+      adapter: "{{ adapter }}"
+      skip_validation: "{{ skip_validation }}"
+      dry_run: "{{ dry_run }}"
+
+prerequisites:
+  - "IBM Cloud Classic API key"
+  - "IBM Cloud VPC API key"
+  - "Classic-to-VPC transit gateway or VPN"
+  - "VPC resource quotas verified"
+
+estimated_duration: "4-12 hours depending on data volume"
+risk_level: medium

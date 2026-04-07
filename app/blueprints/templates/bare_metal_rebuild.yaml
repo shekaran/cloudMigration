@@ -1,0 +1,58 @@
+name: bare-metal-rebuild
+display_name: "Bare Metal to IBM Cloud VPC Rebuild"
+description: >
+  Migrate bare metal servers to IBM Cloud VPC by rebuilding workloads
+  as cloud-native instances. Extracts application and data layers,
+  provisions new VPC infrastructure, and migrates data.
+version: "1.0"
+category: rebuild
+source_platform: bare_metal
+target_platform: ibm_vpc
+
+parameters:
+  adapter: bare_metal
+  skip_validation: true
+  dry_run: false
+  strategy: rebuild
+  sync_mode: database
+  parallel_sync: true
+  max_concurrent_syncs: 2
+  continuous_sync: true
+  convergence_threshold_mb: 100
+  max_downtime_seconds: 600
+
+steps:
+  - name: discover
+    description: "Discover bare metal servers (IPMI/BMC inventory)"
+    action: discover
+    params:
+      adapter: "{{ adapter }}"
+
+  - name: validate
+    description: "Validate hardware compatibility and identify rebuild targets"
+    action: validate
+    params:
+      skip_on_error: "{{ skip_validation }}"
+
+  - name: plan
+    description: "Generate rebuild plan with VPC-optimized configurations"
+    action: plan
+    params:
+      adapter: "{{ adapter }}"
+
+  - name: execute
+    description: "Execute rebuild migration"
+    action: execute
+    params:
+      adapter: "{{ adapter }}"
+      skip_validation: "{{ skip_validation }}"
+      dry_run: "{{ dry_run }}"
+
+prerequisites:
+  - "IPMI/BMC access to bare metal servers"
+  - "IBM Cloud API key with VPC permissions"
+  - "Application inventory documented"
+  - "Data migration path validated"
+
+estimated_duration: "8-24 hours depending on complexity"
+risk_level: high

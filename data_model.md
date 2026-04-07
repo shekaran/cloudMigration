@@ -538,7 +538,59 @@ To add new resource types:
 
 ---
 
-# 17. Final Guideline
+# 17. Phase 5.1 — Replication & Checkpoint Models (`app/models/replication.py`)
+
+## 17.1 ReplicationState
+
+Tracks the replication lifecycle for a single resource (volume, database, boot disk).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique replication tracking ID |
+| `resource_id` | UUID | Source resource being replicated |
+| `resource_name` | str | Human-readable resource name |
+| `status` | ReplicationStatus | Lifecycle state (pending → syncing → delta_syncing → quiesced → validating → completed/failed/rolled_back) |
+| `last_sync_time` | datetime | Timestamp of last successful sync |
+| `data_transferred_bytes` | int | Total bytes transferred so far |
+| `data_total_bytes` | int | Total bytes to transfer |
+| `checksums` | list[ChecksumRecord] | Checksum records for verification |
+| `checksum_verified` | bool | True if all checksums passed |
+| `checkpoint_id` | str | Last checkpoint covering this resource |
+| `error` | str | Error message if replication failed |
+| `retry_count` | int | Number of retries attempted |
+
+## 17.2 ExecutionCheckpoint
+
+Workflow-level checkpoint for resume and recovery.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `checkpoint_id` | str | Unique checkpoint identifier |
+| `workflow_id` | str | Migration job/workflow ID |
+| `stage` | str | Pipeline stage at checkpoint |
+| `resource_ids` | list[UUID] | Resources covered by checkpoint |
+| `replication_states` | list[ReplicationState] | State snapshot at checkpoint time |
+| `timestamp` | datetime | When checkpoint was created |
+| `status` | CheckpointStatus | active → superseded → used_for_resume → expired |
+| `metadata` | dict | Arbitrary metadata (WAL positions, plan IDs) |
+
+## 17.3 ChecksumRecord
+
+Per-data-unit integrity verification.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `target` | str | What was checksummed (volume name, db name) |
+| `algorithm` | ChecksumAlgorithm | sha256, md5, or xxh3 |
+| `source_checksum` | str | Checksum computed on source |
+| `target_checksum` | str | Checksum computed on target |
+| `verified` | bool | True if source == target |
+| `verified_at` | datetime | When verification ran |
+| `size_bytes` | int | Size of checksummed data |
+
+---
+
+# 18. Final Guideline
 
 If a resource cannot be represented in this model:
 

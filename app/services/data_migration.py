@@ -4,18 +4,29 @@ Provides:
 1. Incremental sync — dirty block tracking, delta transfers, bandwidth estimation
 2. Database replication — pg_dump/mysqldump simulation, WAL shipping abstraction
 3. Migration hooks — pre/post hooks (quiesce, cutover, rollback checkpoints)
+4. Checksum validation — SHA-256 integrity verification per volume/database
+5. Checkpoint persistence — save/load plans for resume & recovery
 """
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import structlog
 from pydantic import BaseModel, Field
 
 from app.models.canonical import ComputeResource, StorageVolume
+from app.models.replication import (
+    ChecksumAlgorithm,
+    ChecksumRecord,
+    CheckpointStatus,
+    ExecutionCheckpoint,
+    ReplicationState,
+    ReplicationStatus,
+)
 from app.models.responses import DiscoveredResources
 from app.models.vpc import VPCTranslationResult
 
@@ -129,6 +140,20 @@ class DataMigrationPlan(BaseModel):
     checkpoints: list[RollbackCheckpoint] = Field(default_factory=list)
     phases_completed: list[str] = Field(default_factory=list)
     error: str | None = Field(default=None)
+    # Phase 5.1 additions
+    replication_states: list[ReplicationState] = Field(
+        default_factory=list,
+        description="Per-resource replication tracking with checksum verification",
+    )
+    execution_checkpoints: list[ExecutionCheckpoint] = Field(
+        default_factory=list,
+        description="Workflow-level checkpoints for resume & recovery",
+    )
+    checksum_records: list[ChecksumRecord] = Field(
+        default_factory=list,
+        description="Aggregated checksum verification results",
+    )
+    dry_run: bool = Field(default=False, description="If True, no actual data was transferred")
 
 
 class AdvancedDataMigrationService:
@@ -144,17 +169,29 @@ class AdvancedDataMigrationService:
         plan = service.final_sync(plan)
         plan = service.cutover(plan)
         plan = service.validate(plan)
+
+    Resume:
+        plan = service.load_plan(job_id)
+        plan = service.resume(plan)  # continues from last checkpoint
     """
+
+    # Ordered pipeline stages for resume logic
+    PIPELINE_STAGES = [
+        "pre_hooks", "initial_sync", "incremental_sync",
+        "quiesce", "final_sync", "cutover", "validate",
+    ]
 
     def __init__(
         self,
         output_dir: str | Path = "output/migrations",
         bandwidth_mbps: float = 1000.0,
         compression_ratio: float = 0.6,
+        checksum_algorithm: ChecksumAlgorithm = ChecksumAlgorithm.SHA256,
     ) -> None:
         self._output_dir = Path(output_dir)
         self._bandwidth_mbps = bandwidth_mbps
         self._compression_ratio = compression_ratio
+        self._checksum_algorithm = checksum_algorithm
 
     def plan(
         self,
@@ -189,6 +226,11 @@ class AdvancedDataMigrationService:
         # Build standard hooks
         hooks = self._build_default_hooks(canonical.compute, db_replications)
 
+        # Build per-resource replication states
+        replication_states = self._build_replication_states(
+            canonical.compute, canonical.storage, block_states
+        )
+
         plan = DataMigrationPlan(
             plan_id=f"dmp-{uuid4().hex[:12]}",
             created_at=datetime.now(timezone.utc).isoformat(),
@@ -197,6 +239,7 @@ class AdvancedDataMigrationService:
             bandwidth_estimate=bandwidth_estimate,
             db_replications=db_replications,
             hooks=hooks,
+            replication_states=replication_states,
         )
 
         logger.info(
@@ -208,6 +251,7 @@ class AdvancedDataMigrationService:
             delta_data_gb=round(delta_data_gb, 1),
             db_replications=len(db_replications),
             hooks=len(hooks),
+            replication_states=len(replication_states),
         )
 
         return plan
@@ -220,6 +264,13 @@ class AdvancedDataMigrationService:
             # Simulate full sync — all blocks transferred
             bs.synced_blocks = bs.total_blocks
             bs.dirty_blocks = int(bs.total_blocks * 0.05)  # 5% changed during sync
+
+        # Update replication states
+        for rs in plan.replication_states:
+            rs.status = ReplicationStatus.SYNCING
+            rs.data_transferred_bytes = int(rs.data_total_bytes * 0.95)
+            rs.last_sync_time = datetime.now(timezone.utc)
+            rs.updated_at = datetime.now(timezone.utc)
 
         plan.phases_completed.append("initial_sync")
 
@@ -244,9 +295,16 @@ class AdvancedDataMigrationService:
             bs.delta_size_mb = delta_mb
             bs.dirty_blocks = int(bs.dirty_blocks * 0.1)  # 90% reduction after sync
 
+        # Update replication states
+        for rs in plan.replication_states:
+            rs.status = ReplicationStatus.DELTA_SYNCING
+            rs.data_transferred_bytes = rs.data_total_bytes
+            rs.last_sync_time = datetime.now(timezone.utc)
+            rs.updated_at = datetime.now(timezone.utc)
+
         plan.phases_completed.append("incremental_sync")
 
-        # Create a checkpoint after incremental sync
+        # Create a rollback checkpoint after incremental sync
         checkpoint = RollbackCheckpoint(
             checkpoint_id=f"ckpt-{uuid4().hex[:8]}",
             phase=MigrationPhase.INCREMENTAL_SYNC,
@@ -256,11 +314,21 @@ class AdvancedDataMigrationService:
         )
         plan.checkpoints.append(checkpoint)
 
+        # Create an execution checkpoint for resume capability
+        exec_checkpoint = self._create_execution_checkpoint(
+            plan, "incremental_sync", checkpoint.checkpoint_id
+        )
+        plan.execution_checkpoints.append(exec_checkpoint)
+
+        # Persist plan to disk for recovery
+        self._persist_checkpoint(plan)
+
         logger.info(
             "incremental_sync_completed",
             plan_id=plan.plan_id,
             delta_mb=round(total_delta_mb, 1),
             checkpoint_id=checkpoint.checkpoint_id,
+            exec_checkpoint_id=exec_checkpoint.checkpoint_id,
         )
         return plan
 
@@ -300,6 +368,11 @@ class AdvancedDataMigrationService:
         for db_state in plan.db_replications:
             db_state.wal_position = f"0/{uuid4().hex[:8].upper()}"
 
+        # Update replication states
+        for rs in plan.replication_states:
+            rs.status = ReplicationStatus.QUIESCED
+            rs.updated_at = datetime.now(timezone.utc)
+
         # Create quiesce checkpoint
         checkpoint = RollbackCheckpoint(
             checkpoint_id=f"ckpt-{uuid4().hex[:8]}",
@@ -311,12 +384,20 @@ class AdvancedDataMigrationService:
         )
         plan.checkpoints.append(checkpoint)
 
+        # Execution checkpoint for resume
+        exec_checkpoint = self._create_execution_checkpoint(
+            plan, "quiesce", checkpoint.checkpoint_id
+        )
+        plan.execution_checkpoints.append(exec_checkpoint)
+        self._persist_checkpoint(plan)
+
         plan.phases_completed.append("quiesce")
 
         logger.info(
             "quiesce_completed",
             plan_id=plan.plan_id,
             checkpoint_id=checkpoint.checkpoint_id,
+            exec_checkpoint_id=exec_checkpoint.checkpoint_id,
             db_wal_positions=[d.wal_position for d in plan.db_replications],
         )
         return plan
@@ -367,7 +448,7 @@ class AdvancedDataMigrationService:
         return plan
 
     def validate(self, plan: DataMigrationPlan) -> DataMigrationPlan:
-        """Validate data integrity post-cutover."""
+        """Validate data integrity post-cutover with checksum verification."""
         plan.phase = MigrationPhase.VALIDATE
 
         # Execute validation hooks
@@ -378,10 +459,39 @@ class AdvancedDataMigrationService:
                 hook.output = f"Simulated: {hook.command}"
                 hook.executed_at = datetime.now(timezone.utc).isoformat()
 
+        # Checksum verification for each volume
+        checksum_records = self._verify_checksums(plan)
+        plan.checksum_records.extend(checksum_records)
+
+        # Update replication states with checksum results
+        for rs in plan.replication_states:
+            rs.status = ReplicationStatus.VALIDATING
+            # Match checksums to replication states by resource name
+            matching = [c for c in checksum_records if c.target == rs.resource_name]
+            for cr in matching:
+                rs.record_checksum(cr)
+            rs.status = ReplicationStatus.COMPLETED
+            rs.updated_at = datetime.now(timezone.utc)
+
+        all_verified = all(cr.verified for cr in checksum_records) if checksum_records else True
+        if not all_verified:
+            failed = [cr.target for cr in checksum_records if not cr.verified]
+            plan.error = f"Checksum verification failed for: {', '.join(failed)}"
+            logger.warning(
+                "checksum_verification_failed",
+                plan_id=plan.plan_id,
+                failed_targets=failed,
+            )
+
         plan.phase = MigrationPhase.COMPLETED
         plan.phases_completed.append("validate")
 
-        logger.info("data_migration_validated", plan_id=plan.plan_id)
+        logger.info(
+            "data_migration_validated",
+            plan_id=plan.plan_id,
+            checksums_verified=len(checksum_records),
+            all_passed=all_verified,
+        )
         return plan
 
     def rollback(self, plan: DataMigrationPlan) -> DataMigrationPlan:
@@ -426,6 +536,202 @@ class AdvancedDataMigrationService:
             "data_migration_plan_written",
             plan_id=plan.plan_id,
             path=str(plan_path),
+        )
+        return plan_path
+
+    # --- Resume & Recovery ---
+
+    def load_plan(self, job_id: str) -> DataMigrationPlan | None:
+        """Load a persisted migration plan from disk for resume.
+
+        Args:
+            job_id: The job ID whose plan to load.
+
+        Returns:
+            The deserialized DataMigrationPlan, or None if not found.
+        """
+        plan_path = self._output_dir / job_id / "data_migration_plan.json"
+        if not plan_path.exists():
+            logger.warning("plan_not_found", job_id=job_id, path=str(plan_path))
+            return None
+
+        raw = json.loads(plan_path.read_text())
+        plan = DataMigrationPlan.model_validate(raw)
+
+        logger.info(
+            "plan_loaded",
+            plan_id=plan.plan_id,
+            job_id=job_id,
+            phase=plan.phase.value,
+            phases_completed=plan.phases_completed,
+        )
+        return plan
+
+    def resume(self, plan: DataMigrationPlan) -> DataMigrationPlan:
+        """Resume a migration plan from the last completed stage.
+
+        Determines which stages have been completed and continues
+        from the next stage in the pipeline.
+
+        Args:
+            plan: A previously persisted plan (loaded via load_plan).
+
+        Returns:
+            The plan after completing all remaining stages.
+        """
+        completed = set(plan.phases_completed)
+
+        # Mark the latest execution checkpoint as used for resume
+        if plan.execution_checkpoints:
+            latest = plan.execution_checkpoints[-1]
+            latest.mark_used()
+
+        logger.info(
+            "migration_resume_started",
+            plan_id=plan.plan_id,
+            completed_stages=list(completed),
+        )
+
+        # Map stage names to methods
+        stage_methods = {
+            "pre_hooks": self.execute_pre_hooks,
+            "initial_sync": self.initial_sync,
+            "incremental_sync": self.incremental_sync,
+            "quiesce": self.quiesce,
+            "final_sync": self.final_sync,
+            "cutover": self.cutover,
+            "validate": self.validate,
+        }
+
+        for stage in self.PIPELINE_STAGES:
+            if stage not in completed:
+                logger.info("resume_executing_stage", plan_id=plan.plan_id, stage=stage)
+                plan = stage_methods[stage](plan)
+
+        return plan
+
+    # --- Checksum Verification ---
+
+    def _verify_checksums(self, plan: DataMigrationPlan) -> list[ChecksumRecord]:
+        """Compute and verify checksums for all synced volumes and databases."""
+        records: list[ChecksumRecord] = []
+
+        for bs in plan.block_sync_states:
+            # Simulate checksum computation (in production, this would read actual data)
+            source_hash = self._simulate_checksum(bs.volume_name, bs.total_size_gb, "source")
+            target_hash = self._simulate_checksum(bs.volume_name, bs.total_size_gb, "target")
+
+            record = ChecksumRecord(
+                target=bs.volume_name,
+                algorithm=self._checksum_algorithm,
+                source_checksum=source_hash,
+                target_checksum=target_hash,
+                verified=source_hash == target_hash,
+                verified_at=datetime.now(timezone.utc),
+                size_bytes=int(bs.total_size_gb * 1024 * 1024 * 1024),
+            )
+            records.append(record)
+
+        for db_state in plan.db_replications:
+            db_name = db_state.config.db_name
+            source_hash = self._simulate_checksum(db_name, db_state.config.estimated_size_gb, "source")
+            target_hash = self._simulate_checksum(db_name, db_state.config.estimated_size_gb, "target")
+
+            record = ChecksumRecord(
+                target=db_name,
+                algorithm=self._checksum_algorithm,
+                source_checksum=source_hash,
+                target_checksum=target_hash,
+                verified=source_hash == target_hash,
+                verified_at=datetime.now(timezone.utc),
+                size_bytes=int(db_state.config.estimated_size_gb * 1024 * 1024 * 1024),
+            )
+            records.append(record)
+
+        return records
+
+    @staticmethod
+    def _simulate_checksum(name: str, size_gb: float, side: str) -> str:
+        """Generate a deterministic simulated checksum.
+
+        In production, this would compute a real SHA-256 over the data.
+        For simulation, we use a deterministic hash so source == target (data match).
+        """
+        raw = f"{name}:{size_gb}"
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    # --- Replication State Tracking ---
+
+    def _build_replication_states(
+        self,
+        compute: list[ComputeResource],
+        storage: list[StorageVolume],
+        block_states: list[BlockSyncState],
+    ) -> list[ReplicationState]:
+        """Build per-resource ReplicationState entries for all migrating resources."""
+        states: list[ReplicationState] = []
+
+        # Storage volumes
+        for vol in storage:
+            matching_bs = next(
+                (bs for bs in block_states if bs.volume_id == str(vol.id)),
+                None,
+            )
+            states.append(ReplicationState(
+                resource_id=vol.id,
+                resource_name=vol.name,
+                data_total_bytes=int(vol.size_gb * 1024 * 1024 * 1024),
+            ))
+
+        # Boot disks from compute
+        for vm in compute:
+            if vm.storage_gb > 0:
+                states.append(ReplicationState(
+                    resource_id=vm.id,
+                    resource_name=f"{vm.name}-boot",
+                    data_total_bytes=int(vm.storage_gb * 1024 * 1024 * 1024),
+                ))
+
+        return states
+
+    # --- Execution Checkpoints ---
+
+    def _create_execution_checkpoint(
+        self,
+        plan: DataMigrationPlan,
+        stage: str,
+        rollback_checkpoint_id: str = "",
+    ) -> ExecutionCheckpoint:
+        """Create a workflow-level execution checkpoint."""
+        # Supersede previous execution checkpoints
+        for prev in plan.execution_checkpoints:
+            if prev.status == CheckpointStatus.ACTIVE:
+                prev.supersede()
+
+        resource_ids = [rs.resource_id for rs in plan.replication_states]
+
+        checkpoint = ExecutionCheckpoint(
+            workflow_id=plan.job_id or plan.plan_id,
+            stage=stage,
+            resource_ids=resource_ids,
+            replication_states=[rs.model_copy(deep=True) for rs in plan.replication_states],
+            metadata={
+                "plan_id": plan.plan_id,
+                "rollback_checkpoint_id": rollback_checkpoint_id,
+                "phases_completed": ",".join(plan.phases_completed),
+            },
+        )
+
+        return checkpoint
+
+    def _persist_checkpoint(self, plan: DataMigrationPlan) -> Path:
+        """Persist the current plan state to disk for recovery."""
+        output_dir = self._output_dir / (plan.job_id or plan.plan_id)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        plan_path = output_dir / "data_migration_plan.json"
+        plan_path.write_text(
+            json.dumps(plan.model_dump(mode="json"), indent=2, default=str)
         )
         return plan_path
 

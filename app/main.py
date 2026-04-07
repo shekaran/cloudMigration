@@ -14,9 +14,12 @@ from app.api.routes.discovery import router as discovery_router
 from app.api.routes.migration import router as migration_router
 from app.core.config import get_settings
 from app.services.containerization import ContainerizationRecommender
+from app.blueprints.engine import BlueprintEngine
 from app.services.data_migration import AdvancedDataMigrationService
 from app.services.discovery import DiscoveryService
 from app.services.firewall_engine import FirewallEngine
+from app.services.reliability import ReliabilityManager, RetryPolicy
+from app.services.replication_engine import ReplicationEngine
 from app.services.k8s_migration import K8sMigrationService
 from app.services.k8s_translation import K8sTranslationService
 from app.services.network_planner import NetworkPlanner
@@ -75,6 +78,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Phase 5 engines
     data_migration_service = AdvancedDataMigrationService()
 
+    # Phase 5.1 engines
+    replication_engine = ReplicationEngine()
+    reliability_manager = ReliabilityManager(default_policy=RetryPolicy(max_retries=3))
+    blueprint_engine = BlueprintEngine()
+
+    logger.info(
+        "blueprint_templates_loaded",
+        count=len(blueprint_engine.list_templates()),
+        templates=[t.name for t in blueprint_engine.list_templates()],
+    )
+
     orchestrator = MigrationOrchestrator(
         registry=registry,
         translation_service=translation_service,
@@ -87,6 +101,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         k8s_migration_service=k8s_migration_service,
         containerization_recommender=containerization_recommender,
         data_migration_service=data_migration_service,
+        replication_engine=replication_engine,
+        reliability_manager=reliability_manager,
     )
 
     # Wire into FastAPI dependency injection
@@ -116,7 +132,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Migration Orchestration Engine",
         description="Multi-Platform Migration Orchestration Engine to IBM Cloud VPC",
-        version="0.7.0",
+        version="0.8.0",
         lifespan=lifespan,
         debug=settings.app_debug,
     )

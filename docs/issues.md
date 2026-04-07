@@ -69,11 +69,25 @@
 
 ---
 
+## Phase 5.1 — Replication, Reliability & Usability
+
+| # | Issue | Source References |
+|---|-------|-------------------|
+| [#31](https://github.com/shekaran/cloudMigration/issues/31) | ReplicationState & ExecutionCheckpoint Data Models | `data_model_final.md` (ReplicationState, ExecutionCheckpoint) · `architecture_final.md` §Replication Engine |
+| [#32](https://github.com/shekaran/cloudMigration/issues/32) | Checksum Validation & Data Integrity Verification | `project_spec_final.md` §Replication (checksum validation) · `data_model_final.md` (checksum_verified) |
+| [#33](https://github.com/shekaran/cloudMigration/issues/33) | Checkpoint Resume & Recovery | `project_spec_final.md` §Replication (resume capability) · `data_model_final.md` (ExecutionCheckpoint) · `architecture_final.md` §Reliability Layer |
+| [#34](https://github.com/shekaran/cloudMigration/issues/34) | Reliability Layer — Retry Policies & Idempotent Execution | `architecture_final.md` §Reliability Layer · `project_spec_final.md` §Reliability · `execution_plan_final.md` Phase 2 |
+| [#35](https://github.com/shekaran/cloudMigration/issues/35) | Continuous Delta Sync (CDC) & Parallel Sync | `architecture_final.md` §Replication Engine (continuous delta sync) · `execution_plan_final.md` Phase 3 (parallel sync, cutover optimization) |
+| [#36](https://github.com/shekaran/cloudMigration/issues/36) | CLI Quickstart & Prebuilt Migration Templates | `execution_plan_final.md` Phase 1 (CLI quickstart, template-based execution) · `project_spec_final.md` §Usability (CLI quickstart, prebuilt templates) |
+| [#37](https://github.com/shekaran/cloudMigration/issues/37) | Blueprint Engine — Templates & Guided Workflows | `architecture_final.md` §Blueprint Engine · `execution_plan_final.md` Phase 6 (blueprint engine) |
+| [#19](https://github.com/shekaran/cloudMigration/issues/19) | Dry Run / Simulation Mode *(moved from Phase 6)* | `project_spec_final.md` §Usability (dry-run mode) · `project_spec.md` §19 · `execution_plan.md` §9 |
+
+---
+
 ## Phase 6 — Productization
 
 | # | Issue | Source References |
 |---|-------|-------------------|
-| [#19](https://github.com/shekaran/cloudMigration/issues/19) | Dry Run / Simulation Mode | `project_spec.md` §19 · `execution_plan.md` §9 |
 | [#20](https://github.com/shekaran/cloudMigration/issues/20) | Reporting & Risk Analysis Engine | `execution_plan.md` §9 |
 | [#29](https://github.com/shekaran/cloudMigration/issues/29) | UI Dashboard | `project_spec.md` §19 · `execution_plan.md` §9 |
 | [#30](https://github.com/shekaran/cloudMigration/issues/30) | Multi-Cloud Extension (AWS/Azure) | `project_spec.md` §19 · `execution_plan.md` §9 · `architecture.md` §13 |
@@ -100,3 +114,7 @@
 | `execution_plan.md` | Phased execution plan — phase objectives, deliverables, success criteria |
 | `architecture.md` | System architecture — components, data flow, patterns, constraints |
 | `claude.md` | Implementation guidelines — code quality, design rules, testing expectations |
+| `architecture_final.md` | Architecture additions — Replication Engine, Reliability Layer, Blueprint Engine |
+| `data_model_final.md` | New data entities — ReplicationState, ExecutionCheckpoint |
+| `delta/project_spec_final.md` | Spec enhancements — replication, reliability, usability features |
+| `execution_plan_final.md` | Execution plan updates — phased additions for new components |

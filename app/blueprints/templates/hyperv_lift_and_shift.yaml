@@ -1,0 +1,58 @@
+name: hyperv-lift-and-shift
+display_name: "Hyper-V to IBM Cloud VPC Lift & Shift"
+description: >
+  Migrate Microsoft Hyper-V virtual machines to IBM Cloud VPC.
+  Converts VHDX/VHD disks, maps virtual switches to VPC subnets,
+  and preserves VM configurations.
+version: "1.0"
+category: lift_and_shift
+source_platform: hyperv
+target_platform: ibm_vpc
+
+parameters:
+  adapter: hyperv
+  skip_validation: false
+  dry_run: false
+  strategy: lift_and_shift
+  sync_mode: incremental
+  parallel_sync: true
+  max_concurrent_syncs: 4
+  continuous_sync: true
+  convergence_threshold_mb: 50
+  max_downtime_seconds: 300
+
+steps:
+  - name: discover
+    description: "Discover Hyper-V environment (VMs, virtual switches, SCVMM)"
+    action: discover
+    params:
+      adapter: "{{ adapter }}"
+
+  - name: validate
+    description: "Validate VM compatibility (Gen1/Gen2, VHD/VHDX formats)"
+    action: validate
+    params:
+      skip_on_error: "{{ skip_validation }}"
+
+  - name: plan
+    description: "Generate migration plan with disk conversion strategy"
+    action: plan
+    params:
+      adapter: "{{ adapter }}"
+
+  - name: execute
+    description: "Execute Hyper-V migration"
+    action: execute
+    params:
+      adapter: "{{ adapter }}"
+      skip_validation: "{{ skip_validation }}"
+      dry_run: "{{ dry_run }}"
+
+prerequisites:
+  - "Hyper-V host WinRM/PowerShell remoting enabled"
+  - "SCVMM access (if applicable)"
+  - "IBM Cloud API key with VPC permissions"
+  - "VPC quotas sufficient for target VMs"
+
+estimated_duration: "2-8 hours depending on VM count and data"
+risk_level: low

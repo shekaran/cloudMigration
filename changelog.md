@@ -4,6 +4,111 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.8.0] - 2026-04-08 06:15 IST
+
+### Phase 5.1 — Replication, Reliability & Usability
+
+Phase 5.1 adds formal replication/checkpoint data models, checksum-based data integrity verification, a reliability layer with retry policies and idempotent execution, a continuous delta sync (CDC) replication engine with parallel sync and cutover optimization, dry-run simulation mode, a CLI quickstart wizard with blueprint templates, and a full blueprint engine for guided migration workflows.
+
+#### 1. ReplicationState & ExecutionCheckpoint Models (`app/models/replication.py`) — Issue #31
+
+First-class Pydantic entities for tracking replication lifecycle and execution recovery.
+
+- **ReplicationState**: Per-resource tracking — status lifecycle (pending → syncing → delta_syncing → quiesced → validating → completed), data transfer progress, checksum records, retry counts
+- **ExecutionCheckpoint**: Workflow-level checkpoint — captures stage, resource IDs, replication state snapshots, metadata (WAL positions, plan IDs)
+- **ChecksumRecord**: Per-volume/database checksum with algorithm, source/target hashes, verification status
+- **Status enums**: ReplicationStatus (10 states), CheckpointStatus (4 states), ChecksumAlgorithm (SHA256, MD5, XXH3)
+
+#### 2. Checksum Validation & Data Integrity (`app/services/data_migration.py`) — Issue #32
+
+SHA-256 integrity verification integrated into the data migration validate phase.
+
+- **Per-volume checksums**: Source and target checksums computed for every synced volume
+- **Per-database checksums**: Database-level integrity verification post-replication
+- **Verification reporting**: ChecksumRecord list on DataMigrationPlan, per-resource verification on ReplicationState
+- **Failure detection**: Validation flags failed checksums with specific target names
+
+#### 3. Checkpoint Resume & Recovery — Issue #33
+
+Persist migration plans and resume from last checkpoint after failure.
+
+- **Plan persistence**: Plans written to disk as JSON after each checkpoint-creating phase
+- **Plan loading**: `load_plan(job_id)` deserializes a persisted plan
+- **Resume**: `resume(plan)` determines completed stages and continues from next stage
+- **Checkpoint lifecycle**: Active → Superseded (when newer checkpoint created) → Used for Resume
+- **API endpoint**: `POST /resume/{job_id}` for resuming failed jobs
+- **CLI command**: `migrate resume <job_id>` with poll support
+
+#### 4. Reliability Layer (`app/services/reliability.py`) — Issue #34
+
+Configurable retry policies, idempotent execution, and compensation/rollback.
+
+- **RetryPolicy**: Max retries, exponential/linear/fixed backoff, configurable retryable error types
+- **IdempotencyTracker**: Deterministic operation keys, cached results, skip-on-complete
+- **ReliabilityManager**: Wraps operations with retry + idempotency + compensation registration
+- **CompensationAction**: LIFO rollback of registered compensations
+- **Integration**: Wired into MigrationOrchestrator constructor
+
+#### 5. Continuous Delta Sync & Parallel Sync (`app/services/replication_engine.py`) — Issue #35
+
+CDC-like replication engine with parallel volume sync and cutover optimization.
+
+- **Continuous sync**: Iterative delta sync until convergence (delta < threshold MB), configurable intervals, max iterations, lag tracking
+- **Parallel sync**: Concurrent volume synchronization with semaphore-based concurrency control, priority scheduling (CRITICAL > HIGH > NORMAL > LOW)
+- **Cutover optimization**: Downtime estimation, pre-staging tracking, parallel cutover groups (boot disks + data volumes), readiness check against max downtime target
+- **Models**: ContinuousSyncConfig, ParallelSyncConfig, CutoverConfig, SyncIteration, VolumeSyncTask, CutoverPlan
+
+#### 6. Dry Run / Simulation Mode — Issue #19 (moved from Phase 6)
+
+Simulate migrations without data transfer for validation and planning.
+
+- **`--dry-run` flag**: On API `POST /execute/{adapter}?dry_run=true` and CLI `migrate execute --dry-run`
+- **Dry-run report**: JSON report with what-would-happen steps, data estimates, resource mappings
+- **Plan generation**: Builds full data migration plan without executing transfer phases
+- **Cutover estimation**: If replication engine available, estimates downtime even in dry-run
+- **Job tracking**: `dry_run` field on MigrationJob and JobResponse
+
+#### 7. CLI Quickstart & Prebuilt Templates — Issue #36
+
+Interactive wizard and template-based migration execution.
+
+- **`migrate quickstart`**: Interactive guided setup — template selection, prerequisite check, configuration, execution
+- **`migrate templates`**: List all available blueprint templates with category, platform, risk level
+- **`migrate template-info <name>`**: Detailed template view — prerequisites, steps, parameters
+- **`migrate template-run <name>`**: Execute a migration from a template with `--dry-run` and `--skip-validation`
+- **`migrate resume <job_id>`**: Resume a failed migration from last checkpoint
+
+#### 8. Blueprint Engine (`app/blueprints/`) — Issue #37
+
+Prebuilt migration templates and guided workflow engine.
+
+- **5 templates**: lift-and-shift-vmware, replatform-ibm-classic, k8s-migration, bare-metal-rebuild, hyperv-lift-and-shift
+- **YAML-based**: Templates defined in `app/blueprints/templates/*.yaml` with parameters, steps, prerequisites
+- **BlueprintEngine**: Template registry with auto-discovery, category/platform filtering, parameter validation
+- **BlueprintInstance**: Configured instance with resolved template variables, step-by-step progression
+- **Template variables**: `{{ param }}` syntax resolved at configure time from defaults + user overrides
+
+#### Files Changed
+
+| File | Change |
+|------|--------|
+| `app/models/replication.py` | **NEW** — ReplicationState, ExecutionCheckpoint, ChecksumRecord models |
+| `app/services/reliability.py` | **NEW** — RetryPolicy, IdempotencyTracker, ReliabilityManager |
+| `app/services/replication_engine.py` | **NEW** — Continuous sync, parallel sync, cutover optimization |
+| `app/blueprints/__init__.py` | **NEW** — Blueprint package |
+| `app/blueprints/engine.py` | **NEW** — BlueprintEngine, template loading and workflow |
+| `app/blueprints/templates/*.yaml` | **NEW** — 5 blueprint templates |
+| `app/services/data_migration.py` | **UPDATED** — Checksum validation, replication states, checkpoint persistence, resume |
+| `app/services/orchestrator.py` | **UPDATED** — Dry-run mode, replication engine integration, new job fields |
+| `app/models/responses.py` | **UPDATED** — 8 new fields on JobResponse |
+| `app/api/routes/migration.py` | **UPDATED** — dry_run param, resume endpoint, new response fields |
+| `app/cli.py` | **UPDATED** — quickstart, templates, template-run, resume, dry-run support |
+| `app/main.py` | **UPDATED** — Wire ReplicationEngine, ReliabilityManager, BlueprintEngine; version 0.8.0 |
+| `pyproject.toml` | **UPDATED** — Version 0.8.0, PyYAML dependency |
+| `docs/issues.md` | **UPDATED** — Phase 5.1 section with issues #31-#37, #19 moved from Phase 6 |
+
+---
+
 ## [0.7.0] - 2026-04-07 17:00 IST
 
 ### Phase 5 — Advanced Platforms

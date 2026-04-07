@@ -88,6 +88,14 @@ class JobResponse(BaseModel):
     db_replications: int = Field(default=0, description="Number of database replications")
     migration_hooks_executed: int = Field(default=0, description="Migration hooks executed")
     rollback_checkpoints: int = Field(default=0, description="Rollback checkpoints created")
+    dry_run: bool = Field(default=False, description="Whether this was a dry-run simulation")
+    checksums_verified: int = Field(default=0, description="Number of checksums verified")
+    checksums_passed: bool = Field(default=True, description="Whether all checksums passed")
+    replication_converged: bool = Field(default=False, description="Whether continuous sync converged")
+    continuous_sync_iterations: int = Field(default=0, description="CDC sync iterations completed")
+    parallel_volumes_synced: int = Field(default=0, description="Volumes synced in parallel")
+    estimated_downtime_seconds: float = Field(default=0.0, description="Estimated cutover downtime")
+    cutover_ready: bool = Field(default=False, description="Whether cutover meets downtime target")
 
 
 class ErrorResponse(BaseModel):

@@ -487,7 +487,51 @@ It is designed to be:
 
 ---
 
-# 15. Final Guideline
+# 15. Phase 5.1 — Replication, Reliability & Usability
+
+## 15.1 Replication Engine (`app/services/replication_engine.py`)
+
+Handles continuous delta synchronization, parallel volume sync, and cutover optimization.
+
+- **Continuous Delta Sync (CDC)**: Iterative block-level delta sync with convergence detection. Configurable sync interval, max iterations, and convergence threshold.
+- **Parallel Sync**: Semaphore-controlled concurrent volume synchronization with priority scheduling (CRITICAL > HIGH > NORMAL > LOW).
+- **Cutover Optimization**: Estimates downtime based on remaining delta, plans parallel cutover groups, and checks readiness against a max downtime target.
+
+## 15.2 Reliability Layer (`app/services/reliability.py`)
+
+Provides retry policies, idempotent execution, and compensation/rollback.
+
+- **RetryPolicy**: Configurable max retries, exponential/linear/fixed backoff, per-error-type retryability.
+- **IdempotencyTracker**: Deterministic operation keys, cached results, duplicate execution prevention.
+- **ReliabilityManager**: Wraps any operation with retry + idempotency + compensation registration. Supports LIFO compensation execution for rollback.
+
+## 15.3 Blueprint Engine (`app/blueprints/`)
+
+Prebuilt migration templates and guided workflow engine.
+
+- **YAML Templates**: 5 prebuilt templates (VMware lift-and-shift, IBM Classic replatform, K8s migration, bare metal rebuild, Hyper-V lift-and-shift). Auto-discovered from `app/blueprints/templates/`.
+- **BlueprintEngine**: Template registry with filtering by category/platform, parameter validation, template variable resolution.
+- **BlueprintInstance**: Configured instance with step-by-step execution tracking.
+
+## 15.4 Data Model Additions (`app/models/replication.py`)
+
+- **ReplicationState**: Per-resource replication lifecycle tracking with checksum verification.
+- **ExecutionCheckpoint**: Workflow-level checkpoint with replication state snapshots for resume & recovery.
+- **ChecksumRecord**: Per-volume/database SHA-256 integrity verification.
+
+## 15.5 Updated Flow
+
+```
+Discovery → Canonical → Graph → Validation → Strategy → Translation → Terraform
+    → Replication (Initial Sync → Continuous Delta Sync → Quiesce → Final Sync)
+    → Checksum Validation → Cutover → Post-Cutover Validation
+```
+
+With reliability layer wrapping each phase: retry on transient failure, idempotent re-execution, compensation on unrecoverable failure.
+
+---
+
+# 16. Final Guideline
 
 When implementing:
 
