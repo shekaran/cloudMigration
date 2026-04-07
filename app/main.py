@@ -14,6 +14,7 @@ from app.api.routes.discovery import router as discovery_router
 from app.api.routes.migration import router as migration_router
 from app.core.config import get_settings
 from app.services.containerization import ContainerizationRecommender
+from app.services.data_migration import AdvancedDataMigrationService
 from app.services.discovery import DiscoveryService
 from app.services.firewall_engine import FirewallEngine
 from app.services.k8s_migration import K8sMigrationService
@@ -33,6 +34,8 @@ ADAPTER_CONFIG: dict[str, str] = {
     "ibm_classic": "app.adapters.ibm_classic.adapter.IBMClassicAdapter",
     "vmware": "app.adapters.vmware.adapter.VMwareAdapter",
     "kubernetes": "app.adapters.kubernetes.adapter.KubernetesAdapter",
+    "bare_metal": "app.adapters.bare_metal.adapter.BareMetalAdapter",
+    "hyperv": "app.adapters.hyperv.adapter.HyperVAdapter",
 }
 
 
@@ -69,6 +72,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     k8s_migration_service = K8sMigrationService()
     containerization_recommender = ContainerizationRecommender()
 
+    # Phase 5 engines
+    data_migration_service = AdvancedDataMigrationService()
+
     orchestrator = MigrationOrchestrator(
         registry=registry,
         translation_service=translation_service,
@@ -80,6 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         k8s_translation_service=k8s_translation_service,
         k8s_migration_service=k8s_migration_service,
         containerization_recommender=containerization_recommender,
+        data_migration_service=data_migration_service,
     )
 
     # Wire into FastAPI dependency injection
@@ -109,7 +116,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Migration Orchestration Engine",
         description="Multi-Platform Migration Orchestration Engine to IBM Cloud VPC",
-        version="0.6.0",
+        version="0.7.0",
         lifespan=lifespan,
         debug=settings.app_debug,
     )

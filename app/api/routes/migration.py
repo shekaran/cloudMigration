@@ -152,4 +152,11 @@ def _job_to_response(job) -> JobResponse:
         k8s_workloads_migrated=job.k8s_workloads_migrated,
         k8s_target_platform=job.k8s_target_platform,
         containerization_candidates=job.containerization_candidates,
+        data_migration_plan_id=job.data_migration_plan_id,
+        data_sync_mode=job.data_sync_mode,
+        data_total_gb=job.data_total_gb,
+        data_delta_gb=job.data_delta_gb,
+        db_replications=job.db_replications,
+        migration_hooks_executed=job.migration_hooks_executed,
+        rollback_checkpoints=job.rollback_checkpoints,
     )

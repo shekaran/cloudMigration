@@ -81,6 +81,13 @@ class JobResponse(BaseModel):
     k8s_workloads_migrated: int = Field(default=0, description="K8s workloads migrated")
     k8s_target_platform: str | None = Field(default=None, description="IKS or OpenShift")
     containerization_candidates: int = Field(default=0, description="VMs recommended for containerization")
+    data_migration_plan_id: str | None = Field(default=None, description="Advanced data migration plan ID")
+    data_sync_mode: str | None = Field(default=None, description="Data sync mode (full, incremental, database)")
+    data_total_gb: float = Field(default=0.0, description="Total data volume in GB")
+    data_delta_gb: float = Field(default=0.0, description="Incremental delta in GB")
+    db_replications: int = Field(default=0, description="Number of database replications")
+    migration_hooks_executed: int = Field(default=0, description="Migration hooks executed")
+    rollback_checkpoints: int = Field(default=0, description="Rollback checkpoints created")
 
 
 class ErrorResponse(BaseModel):

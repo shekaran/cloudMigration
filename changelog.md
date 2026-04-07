@@ -4,6 +4,80 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.7.0] - 2026-04-07 17:00 IST
+
+### Phase 5 — Advanced Platforms
+
+Phase 5 adds Bare Metal and Hyper-V adapters for full heterogeneous platform support, plus an advanced data migration service with incremental sync, database replication, and pre/post migration hooks with rollback capability.
+
+#### 1. Bare Metal Adapter (`app/adapters/bare_metal/`) — Issue #20
+
+Complex bare metal server fleet with RAID, GPU, bonded NICs, and BMC/IPMI metadata.
+
+- **Mock data**: 5 servers — Dell R740xd (DB, dual-NIC bond, RAID1+RAID0, 256GB), Dell R750 (App, RAID5, 512GB), Dell R750xa (GPU, 4x A100 80GB), IBM Power S922 (AIX 7.3, POWER9, legacy ERP), HPE DL380 (Web, single disk, Legacy BIOS)
+- **RAID normalization**: Boot RAID array → `storage_gb` on ComputeResource, data RAID arrays → `StorageVolume` with IOPS hints (NVMe=100K, SSD=50K)
+- **NIC bonding**: Bond metadata captured (802.3ad/active-backup modes, slave interfaces, speed)
+- **GPU support**: GPU model, count, memory, CUDA version captured in compute metadata
+- **BMC/IPMI**: BMC type (iDRAC9, HMC, iLO5), IP, firmware version in metadata
+- **BIOS types**: UEFI, Legacy, OPAL (IBM Power) tracked for migration compatibility
+- **Architecture**: x86_64 and ppc64le (POWER9) support
+- **Strategy routing**: Bare metal → `rebuild` strategy (7 resources), supported OS → `lift_and_shift` (4 resources)
+- **Total resources**: 11 (5 servers + 3 networks + 2 RAID volumes + 1 security policy)
+
+#### 2. Hyper-V Adapter (`app/adapters/hyperv/`) — Issue #21
+
+Full Hyper-V environment with SCVMM integration, checkpoints, and replication.
+
+- **Mock data**: 5 VMs — DC-PROD-01 (AD Domain Controller, Gen2, replicated), SQL-PROD-01 (SQL Server 2019, 64GB static, 4 disks, 2 checkpoints), WEB-PROD-01 (IIS, dynamic memory), APP-PROD-01 (legacy .NET, Gen1, VHD format), FILE-PROD-01 (file server, 2TB share, replicated)
+- **VHD/VHDX formats**: Both VHD (legacy) and VHDX tracked with disk type (Fixed/Dynamic), current vs max size
+- **Hyper-V Replica**: Replication mode (Primary), state, frequency, replica server in metadata
+- **Checkpoints**: Production and Standard checkpoints with creation time and size
+- **SCVMM integration**: Cloud assignment, service templates, custom properties (CostCenter, Owner)
+- **Dynamic memory**: Min/max/buffer tracked; memory_gb derived from startup_mb
+- **Cluster awareness**: Failover cluster name, node, high availability flag
+- **Generation**: Gen1 (IDE boot) vs Gen2 (SCSI boot, Secure Boot) tracked
+- **Total resources**: 15 (5 VMs + 3 virtual switches + 6 VHD/VHDX volumes + 1 security policy)
+
+#### 3. Advanced Data Migration Service (`app/services/data_migration.py`) — Issue #22
+
+Full-lifecycle data migration with incremental sync, database replication, and rollback.
+
+- **Incremental sync**: Dirty block tracking per volume, delta transfer estimation, configurable block size (4MB default)
+- **Bandwidth estimation**: Calculates full sync and delta sync time based on available bandwidth (configurable) and compression ratio (default 0.6)
+- **Database replication**: Auto-detects databases from compute metadata (PostgreSQL, MySQL, MSSQL, Oracle), configures replication method:
+  - PostgreSQL → WAL shipping with `pg_switch_wal()` quiesce hook
+  - MySQL → Logical replication with `FLUSH TABLES WITH READ LOCK` quiesce hook
+  - MSSQL → Dump/restore with `BACKUP DATABASE` quiesce hook
+- **Migration lifecycle**: 8 phases — idle → pre_sync → initial_sync → incremental_sync → quiesce → final_sync → cutover → validate → completed
+- **Pre/post hooks**: Standard hooks for connectivity verification, snapshot creation, quiesce (filesystem sync, DB checkpoint), DNS cutover, load balancer update, data integrity validation
+- **Rollback checkpoints**: Created after incremental sync and quiesce; `rollback()` reverts to latest checkpoint with DNS/LB revert hooks
+- **Plan persistence**: Full migration plan written to disk as JSON
+- **Sync mode detection**: Automatically selects `database` mode when DB detected, otherwise `incremental`
+
+#### 4. Updated Pipeline & API
+
+- **Orchestrator**: Advanced data migration replaces mock rsync when `AdvancedDataMigrationService` is provided
+- **New `MigrationJob` fields**: `data_migration_plan_id`, `data_sync_mode`, `data_total_gb`, `data_delta_gb`, `db_replications`, `migration_hooks_executed`, `rollback_checkpoints`
+- **New adapters in registry**: `bare_metal` and `hyperv` added to `ADAPTER_CONFIG`
+- **`JobResponse` extended**: 7 new fields for data migration reporting
+- **Backward compatible**: All existing adapters and endpoints work unchanged
+- **Version**: 0.7.0
+
+#### Validated
+- 4/4 adapter tests passed (bare metal discovery/normalization, hyper-v discovery/normalization)
+- 7/7 data migration tests passed (plan, full pipeline, DB replication detection, rollback)
+- 5/5 orchestrator pipeline tests passed (bare metal, hyper-v, vmware, ibm_classic, kubernetes)
+- 32/32 API endpoint tests passed (all 5 adapters, all Phase 1-5 endpoints)
+- Bare metal: 11 resources, rebuild strategy for 7, PostgreSQL WAL shipping detected, 13.7TB total data
+- Hyper-V: 15 resources, SQL Server MSSQL replication detected, 4.7TB total data
+- IBM Classic: incremental sync mode (no DB detected), 3.8TB total data
+- VMware/K8s: backward compatible, unchanged behavior
+
+#### References
+- GitHub Issues: #20, #21, #22
+
+---
+
 ## [0.6.0] - 2026-04-07 13:00 IST
 
 ### Phase 4 — Kubernetes & Modernization

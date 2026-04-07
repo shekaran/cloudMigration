@@ -1,0 +1,1 @@
+"""Bare Metal adapter package."""

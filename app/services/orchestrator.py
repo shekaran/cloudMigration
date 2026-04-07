@@ -1,4 +1,4 @@
-"""Migration orchestrator — end-to-end flow with Phase 2 engines (graph, strategy, validation, network)."""
+"""Migration orchestrator — end-to-end flow with graph, strategy, validation, network, and advanced data migration."""
 
 import asyncio
 import json
@@ -15,6 +15,7 @@ from app.graph.engine import build_graph
 from app.models.responses import DiscoveredResources
 from app.models.vpc import VPCTranslationResult
 from app.services.containerization import ContainerizationRecommender
+from app.services.data_migration import AdvancedDataMigrationService
 from app.services.firewall_engine import FirewallEngine
 from app.services.k8s_migration import K8sMigrationService
 from app.services.k8s_translation import K8sTranslationService
@@ -68,6 +69,13 @@ class MigrationJob(BaseModel):
     k8s_workloads_migrated: int = 0
     k8s_target_platform: str | None = None
     containerization_candidates: int = 0
+    data_migration_plan_id: str | None = None
+    data_sync_mode: str | None = None
+    data_total_gb: float = 0.0
+    data_delta_gb: float = 0.0
+    db_replications: int = 0
+    migration_hooks_executed: int = 0
+    rollback_checkpoints: int = 0
 
 
 class MigrationOrchestrator:
@@ -90,6 +98,7 @@ class MigrationOrchestrator:
         k8s_translation_service: K8sTranslationService | None = None,
         k8s_migration_service: K8sMigrationService | None = None,
         containerization_recommender: ContainerizationRecommender | None = None,
+        data_migration_service: AdvancedDataMigrationService | None = None,
         output_base_dir: str | Path = "output",
     ) -> None:
         self._registry = registry
@@ -102,6 +111,7 @@ class MigrationOrchestrator:
         self._k8s_translation = k8s_translation_service
         self._k8s_migration = k8s_migration_service
         self._containerization = containerization_recommender
+        self._data_migration = data_migration_service
         self._output_base = Path(output_base_dir)
         self._jobs: dict[UUID, MigrationJob] = {}
 
@@ -260,12 +270,19 @@ class MigrationOrchestrator:
         job.terraform_output = str(tf_path)
         job.steps_completed.append("generate_terraform")
 
-        # Step 7: Mock data migration
+        # Step 7: Data migration (advanced or mock)
         job.status = JobStatus.MIGRATING_DATA
         logger.info("pipeline_step", job_id=str(job.job_id), step="migrate_data")
-        migration_dir = await self._mock_data_migration(
-            job, canonical, vpc_result, strategy_result
-        )
+
+        if self._data_migration:
+            migration_dir = await self._advanced_data_migration(
+                job, canonical, vpc_result, strategy_result
+            )
+        else:
+            migration_dir = await self._mock_data_migration(
+                job, canonical, vpc_result, strategy_result
+            )
+
         job.migration_output_dir = str(migration_dir)
         job.steps_completed.append("migrate_data")
 
@@ -407,3 +424,58 @@ class MigrationOrchestrator:
             vms_migrated=len(canonical.compute),
         )
         return migration_dir
+
+    async def _advanced_data_migration(
+        self,
+        job: MigrationJob,
+        canonical: DiscoveredResources,
+        vpc_result: VPCTranslationResult,
+        strategy_result=None,
+    ) -> Path:
+        """Run the advanced data migration pipeline with incremental sync, DB replication, and hooks."""
+        assert self._data_migration is not None
+
+        strategies = {}
+        if strategy_result:
+            strategies = {str(k): v.value if hasattr(v, 'value') else v for k, v in strategy_result.assignments.items()}
+
+        # Plan
+        plan = self._data_migration.plan(canonical, vpc_result, strategies)
+        plan.job_id = str(job.job_id)
+
+        # Execute full pipeline
+        plan = self._data_migration.execute_pre_hooks(plan)
+        plan = self._data_migration.initial_sync(plan)
+        plan = self._data_migration.incremental_sync(plan)
+        plan = self._data_migration.quiesce(plan)
+        plan = self._data_migration.final_sync(plan)
+        plan = self._data_migration.cutover(plan)
+        plan = self._data_migration.validate(plan)
+
+        # Write plan to disk
+        plan_path = self._data_migration.write_plan(plan, str(job.job_id))
+
+        # Update job with data migration stats
+        job.data_migration_plan_id = plan.plan_id
+        job.data_sync_mode = plan.sync_mode.value
+        if plan.bandwidth_estimate:
+            job.data_total_gb = plan.bandwidth_estimate.total_data_gb
+            job.data_delta_gb = plan.bandwidth_estimate.delta_data_gb
+        job.db_replications = len(plan.db_replications)
+        job.migration_hooks_executed = sum(1 for h in plan.hooks if h.executed)
+        job.rollback_checkpoints = len(plan.checkpoints)
+
+        await asyncio.sleep(0.1)
+
+        logger.info(
+            "advanced_data_migration_completed",
+            job_id=str(job.job_id),
+            plan_id=plan.plan_id,
+            sync_mode=plan.sync_mode.value,
+            phases_completed=plan.phases_completed,
+            total_gb=job.data_total_gb,
+            db_replications=job.db_replications,
+            hooks_executed=job.migration_hooks_executed,
+            checkpoints=job.rollback_checkpoints,
+        )
+        return plan_path.parent
