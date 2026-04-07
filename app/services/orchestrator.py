@@ -14,7 +14,10 @@ from app.adapters.registry import AdapterRegistry
 from app.graph.engine import build_graph
 from app.models.responses import DiscoveredResources
 from app.models.vpc import VPCTranslationResult
+from app.services.containerization import ContainerizationRecommender
 from app.services.firewall_engine import FirewallEngine
+from app.services.k8s_migration import K8sMigrationService
+from app.services.k8s_translation import K8sTranslationService
 from app.services.network_planner import NetworkPlanner
 from app.services.strategy import StrategyEngine
 from app.services.translation import TranslationService
@@ -61,12 +64,17 @@ class MigrationJob(BaseModel):
     firewall_conflicts: int = 0
     firewall_rules_consolidated: int = 0
     tier_summary: dict[str, int] = Field(default_factory=dict)
+    k8s_backup_id: str | None = None
+    k8s_workloads_migrated: int = 0
+    k8s_target_platform: str | None = None
+    containerization_candidates: int = 0
 
 
 class MigrationOrchestrator:
-    """Orchestrates the full migration flow with Phase 2 intelligence.
+    """Orchestrates the full migration flow.
 
-    Pipeline: discover → normalize → validate → analyze (graph+strategy+network) → translate → terraform → migrate.
+    VM Pipeline: discover → normalize → validate → analyze → translate → terraform → migrate.
+    K8s Pipeline: discover → normalize → validate → backup → translate → restore.
     Jobs run asynchronously. Poll status via get_job().
     """
 
@@ -79,6 +87,9 @@ class MigrationOrchestrator:
         validation_engine: ValidationEngine | None = None,
         network_planner: NetworkPlanner | None = None,
         firewall_engine: FirewallEngine | None = None,
+        k8s_translation_service: K8sTranslationService | None = None,
+        k8s_migration_service: K8sMigrationService | None = None,
+        containerization_recommender: ContainerizationRecommender | None = None,
         output_base_dir: str | Path = "output",
     ) -> None:
         self._registry = registry
@@ -88,6 +99,9 @@ class MigrationOrchestrator:
         self._validation = validation_engine or ValidationEngine()
         self._network_planner = network_planner or NetworkPlanner()
         self._firewall = firewall_engine or FirewallEngine()
+        self._k8s_translation = k8s_translation_service
+        self._k8s_migration = k8s_migration_service
+        self._containerization = containerization_recommender
         self._output_base = Path(output_base_dir)
         self._jobs: dict[UUID, MigrationJob] = {}
 
@@ -122,7 +136,7 @@ class MigrationOrchestrator:
         return job
 
     async def _run_pipeline(self, job: MigrationJob) -> None:
-        """Execute the full migration pipeline with Phase 2 engines."""
+        """Execute the migration pipeline — routes to K8s or VM pipeline based on adapter."""
         try:
             # Step 1: Discover
             job.status = JobStatus.DISCOVERING
@@ -162,58 +176,16 @@ class MigrationOrchestrator:
                 )
                 return
 
-            # Step 4: Analyze (graph + strategy + firewall + network plan)
-            job.status = JobStatus.ANALYZING
-            logger.info("pipeline_step", job_id=str(job.job_id), step="analyze")
-            strategy_result = self._strategy.analyze(canonical, graph)
-            firewall_result = self._firewall.analyze(canonical)
-            network_plan = self._network_planner.plan(canonical.networks, canonical.compute)
-            job.strategy_summary = strategy_result.summary
-            job.graph_dot = graph.to_dot()
-            job.firewall_conflicts = len(firewall_result.conflicts)
-            job.firewall_rules_consolidated = firewall_result.consolidated_count
-            job.tier_summary = {
-                t.tier: t.subnet_count for t in network_plan.tier_allocations
-            }
+            # Route to K8s or VM pipeline
+            if canonical.kubernetes and self._k8s_translation and self._k8s_migration:
+                await self._run_k8s_pipeline(job, canonical, graph)
+            else:
+                await self._run_vm_pipeline(job, canonical, graph)
 
-            execution_order = graph.topological_sort()
-            stages = graph.parallel_stages()
-            logger.info(
-                "pipeline_analysis",
-                job_id=str(job.job_id),
-                strategies=strategy_result.summary,
-                subnets_planned=len(network_plan.allocations),
-                execution_stages=len(stages),
-                firewall_conflicts=len(firewall_result.conflicts),
-                tiers=list(job.tier_summary.keys()),
-            )
-            job.steps_completed.append("analyze")
-
-            # Step 5: Translate (strategy-aware + network-planned)
-            job.status = JobStatus.TRANSLATING
-            logger.info("pipeline_step", job_id=str(job.job_id), step="translate")
-            vpc_result = self._translation.translate(
-                canonical,
-                strategy_result=strategy_result,
-                network_plan=network_plan,
-            )
-            job.steps_completed.append("translate")
-
-            # Step 6: Generate Terraform
-            job.status = JobStatus.GENERATING_TERRAFORM
-            logger.info("pipeline_step", job_id=str(job.job_id), step="generate_terraform")
-            tf_path = self._terraform.generate(vpc_result)
-            job.terraform_output = str(tf_path)
-            job.steps_completed.append("generate_terraform")
-
-            # Step 7: Mock data migration
-            job.status = JobStatus.MIGRATING_DATA
-            logger.info("pipeline_step", job_id=str(job.job_id), step="migrate_data")
-            migration_dir = await self._mock_data_migration(
-                job, canonical, vpc_result, strategy_result
-            )
-            job.migration_output_dir = str(migration_dir)
-            job.steps_completed.append("migrate_data")
+            # Containerization recommendations (for VM adapters)
+            if canonical.compute and self._containerization:
+                container_result = self._containerization.analyze(canonical)
+                job.containerization_candidates = container_result.total_candidates
 
             # Done
             job.status = JobStatus.COMPLETED
@@ -236,6 +208,119 @@ class MigrationOrchestrator:
                 step=job.status.value,
                 error=str(exc),
             )
+
+    async def _run_vm_pipeline(
+        self,
+        job: MigrationJob,
+        canonical: DiscoveredResources,
+        graph,
+    ) -> None:
+        """VM migration pipeline: analyze → translate → terraform → migrate."""
+        # Step 4: Analyze (graph + strategy + firewall + network plan)
+        job.status = JobStatus.ANALYZING
+        logger.info("pipeline_step", job_id=str(job.job_id), step="analyze")
+        strategy_result = self._strategy.analyze(canonical, graph)
+        firewall_result = self._firewall.analyze(canonical)
+        network_plan = self._network_planner.plan(canonical.networks, canonical.compute)
+        job.strategy_summary = strategy_result.summary
+        job.graph_dot = graph.to_dot()
+        job.firewall_conflicts = len(firewall_result.conflicts)
+        job.firewall_rules_consolidated = firewall_result.consolidated_count
+        job.tier_summary = {
+            t.tier: t.subnet_count for t in network_plan.tier_allocations
+        }
+
+        execution_order = graph.topological_sort()
+        stages = graph.parallel_stages()
+        logger.info(
+            "pipeline_analysis",
+            job_id=str(job.job_id),
+            strategies=strategy_result.summary,
+            subnets_planned=len(network_plan.allocations),
+            execution_stages=len(stages),
+            firewall_conflicts=len(firewall_result.conflicts),
+            tiers=list(job.tier_summary.keys()),
+        )
+        job.steps_completed.append("analyze")
+
+        # Step 5: Translate (strategy-aware + network-planned)
+        job.status = JobStatus.TRANSLATING
+        logger.info("pipeline_step", job_id=str(job.job_id), step="translate")
+        vpc_result = self._translation.translate(
+            canonical,
+            strategy_result=strategy_result,
+            network_plan=network_plan,
+        )
+        job.steps_completed.append("translate")
+
+        # Step 6: Generate Terraform
+        job.status = JobStatus.GENERATING_TERRAFORM
+        logger.info("pipeline_step", job_id=str(job.job_id), step="generate_terraform")
+        tf_path = self._terraform.generate(vpc_result)
+        job.terraform_output = str(tf_path)
+        job.steps_completed.append("generate_terraform")
+
+        # Step 7: Mock data migration
+        job.status = JobStatus.MIGRATING_DATA
+        logger.info("pipeline_step", job_id=str(job.job_id), step="migrate_data")
+        migration_dir = await self._mock_data_migration(
+            job, canonical, vpc_result, strategy_result
+        )
+        job.migration_output_dir = str(migration_dir)
+        job.steps_completed.append("migrate_data")
+
+    async def _run_k8s_pipeline(
+        self,
+        job: MigrationJob,
+        canonical: DiscoveredResources,
+        graph,
+    ) -> None:
+        """K8s migration pipeline: analyze → backup → translate → restore → validate."""
+        assert self._k8s_translation is not None
+        assert self._k8s_migration is not None
+
+        # Step 4: Analyze
+        job.status = JobStatus.ANALYZING
+        logger.info("pipeline_step", job_id=str(job.job_id), step="analyze")
+        strategy_result = self._strategy.analyze(canonical, graph)
+        job.strategy_summary = strategy_result.summary
+        job.graph_dot = graph.to_dot()
+        job.steps_completed.append("analyze")
+
+        # Step 5: Backup
+        logger.info("pipeline_step", job_id=str(job.job_id), step="k8s_backup")
+        backup = self._k8s_migration.backup(canonical)
+        job.k8s_backup_id = backup.backup_id
+        job.steps_completed.append("k8s_backup")
+
+        # Step 6: Translate (K8s → IKS/OpenShift)
+        job.status = JobStatus.TRANSLATING
+        logger.info("pipeline_step", job_id=str(job.job_id), step="k8s_translate")
+        k8s_result = self._k8s_translation.translate(canonical)
+        job.k8s_workloads_migrated = len(k8s_result.workloads)
+        job.k8s_target_platform = k8s_result.cluster.platform.value
+        job.steps_completed.append("k8s_translate")
+
+        # Step 7: Restore
+        job.status = JobStatus.MIGRATING_DATA
+        logger.info("pipeline_step", job_id=str(job.job_id), step="k8s_restore")
+        restore_dir = self._k8s_migration.restore(backup, k8s_result)
+        job.migration_output_dir = str(restore_dir)
+        job.steps_completed.append("k8s_restore")
+
+        # Step 8: Validate restore
+        logger.info("pipeline_step", job_id=str(job.job_id), step="k8s_validate_restore")
+        validation = self._k8s_migration.validate(backup, k8s_result)
+        if not validation.passed:
+            logger.warning(
+                "k8s_restore_validation_issues",
+                job_id=str(job.job_id),
+                failed_checks=validation.failed_checks,
+                warnings=validation.warnings,
+            )
+        job.steps_completed.append("k8s_validate_restore")
+
+        await asyncio.sleep(0.1)
 
     async def _mock_data_migration(
         self,

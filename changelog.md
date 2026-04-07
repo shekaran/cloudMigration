@@ -4,6 +4,92 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.6.0] - 2026-04-07 13:00 IST
+
+### Phase 4 — Kubernetes & Modernization
+
+Phase 4 adds Kubernetes workload migration (to IKS and OpenShift), a Velero-like backup/restore service, K8s manifest translation with platform-specific mappings, and a VM containerization recommender.
+
+#### 1. Kubernetes Adapter (`app/adapters/kubernetes/`) — Issue #15
+
+New adapter for discovering and normalizing Kubernetes workloads.
+
+- **Mock data**: Multi-tier app — 3 Deployments/StatefulSets (web-frontend nginx, app-backend, postgres-db), 3 Services (LoadBalancer + ClusterIP), 2 ConfigMaps, 3 PVCs, 1 Secret, 1 HPA, 5-node cluster
+- **Normalization**: Deployments/StatefulSets → `KubernetesResource` with full spec, container metadata, resource requests/limits
+- **Cross-references**: Workloads → PVCs via volume mounts, workloads → services via selector match, app → db via env var dependency
+- **Service mapping**: LoadBalancer → `NetworkSegment(type=VPC)`, ClusterIP → `NetworkSegment(type=SUBNET)`
+- **PVC mapping**: PVCs → `StorageVolume` with storage class, access modes, size parsing
+- **Network policies**: Generates implicit service-level `SecurityPolicy` for discovered services
+- **Total resources**: 10 (3 workloads + 3 networks + 3 storage + 1 security policy)
+
+#### 2. K8s Target Models (`app/models/k8s_target.py`) — Issue #16
+
+Pydantic models for the K8s migration target.
+
+- **`K8sTargetPlatform`** enum: `IKS`, `OPENSHIFT`
+- **`K8sTargetCluster`**: name, platform, region, version, worker pool flavor, worker count
+- **`K8sTargetWorkload`**: name, kind, namespace, replicas, full K8s manifest dict
+- **`K8sTargetService`**: name, service type, ports, full manifest
+- **`K8sTargetStorage`**: name, storage class, size, access modes, full manifest
+- **`K8sTranslationResult`**: cluster + namespaces + workloads + services + storage
+
+#### 3. K8s Translation Service (`app/services/k8s_translation.py`) — Issue #17
+
+Translates discovered K8s resources to IKS or OpenShift target manifests.
+
+- **Configurable target**: `target_platform="iks"` or `"openshift"` with platform-specific mappings
+- **Storage class mapping**: Source classes mapped to IKS (`ibmc-vpc-block-*`) or OpenShift (`ocs-storagecluster-*`) equivalents
+- **Image registry**: IKS (`us.icr.io/migration`) vs OpenShift (internal registry) — public images preserved, custom images prefixed
+- **Service translation**: OpenShift converts `LoadBalancer` → `ClusterIP` (uses Routes instead)
+- **Manifest generation**: Full K8s YAML manifests as dicts with `migrated-by: migration-engine` label
+- **Namespace isolation**: Resources organized by source namespace
+
+#### 4. K8s Backup/Restore Service (`app/services/k8s_migration.py`) — Issue #18
+
+Velero-like backup and restore abstraction for Kubernetes migrations.
+
+- **Backup**: Captures workload specs, service specs, config specs, PVC snapshots → writes to disk with unique backup ID
+- **PVC snapshots**: Records storage class, size, access modes, bound status for each PVC
+- **Restore**: Generates target manifests from backup + translation result → writes cluster.json, namespaces/, workloads/, services/, storage/ directory structure
+- **Validation**: 6 check types — namespace coverage, workload coverage, replica counts, PVC coverage, storage size preservation, service coverage
+- **Models**: `PVCSnapshot`, `KubernetesBackup`, `RestoreValidation` with pass/fail/warning counts
+
+#### 5. Containerization Recommender (`app/services/containerization.py`) — Issue #19
+
+Advisory service evaluating VMs for containerization fitness.
+
+- **Multi-factor scoring** (0-100): OS compatibility (+15/-30), statefulness (+15/-10), resource sizing (+10/+5/-5), tier classification (+10/-5), storage complexity (-10/-5), bare metal (-20)
+- **Fitness levels**: `EXCELLENT` (≥75), `GOOD` (≥55), `POSSIBLE` (≥35), `NOT_RECOMMENDED` (<35 or blockers)
+- **Suggested approach**: Deployment vs StatefulSet, effort level (low/medium/high)
+- **Blocker detection**: Windows/AIX OS, bare metal hardware, excessive storage (>500GB)
+- **VMware results**: webserver=100 (excellent), appserver=85 (excellent), dbserver=45 (possible)
+
+#### 6. Updated Pipeline & API
+
+- **Dual pipeline**: Orchestrator routes to K8s pipeline (backup → translate → restore → validate) or VM pipeline based on adapter type
+- **K8s pipeline steps**: discover → normalize → validate → analyze → k8s_backup → k8s_translate → k8s_restore → k8s_validate_restore
+- **New `MigrationJob` fields**: `k8s_backup_id`, `k8s_workloads_migrated`, `k8s_target_platform`, `containerization_candidates`
+- **New API endpoints**:
+  - `POST /containerize/{adapter}` — VM containerization recommendations
+  - `POST /k8s/backup/{adapter}` — K8s resource backup
+  - `POST /k8s/translate/{adapter}?target_platform=iks|openshift` — K8s manifest translation
+- **Updated endpoints**: `GET /status/{job_id}` includes K8s and containerization fields
+- **Dependencies wiring**: K8sTranslationService, K8sMigrationService, ContainerizationRecommender added to DI container
+- **Version**: 0.6.0
+
+#### Validated
+- 6/6 service tests passed (K8s translation IKS/OpenShift, backup/restore/validate, containerization recommender)
+- 3/3 orchestrator pipeline tests passed (K8s pipeline, VMware backward compat, IBM Classic backward compat)
+- 20/20 API endpoint tests passed (all 3 adapters, all Phase 1-4 endpoints including new containerize, k8s/backup, k8s/translate)
+- K8s pipeline: 8 steps completed, 3 workloads migrated to IKS, backup/restore validation passed (10/10 checks)
+- VMware backward compat: 7 steps completed, 2 containerization candidates detected
+- IBM Classic backward compat: 7 steps completed, 9 resources migrated
+
+#### References
+- GitHub Issues: #15, #16, #17, #18, #19
+
+---
+
 ## [0.5.0] - 2026-04-07 07:15 IST
 
 ### Phase 3 — Network & Security Expansion

@@ -148,4 +148,8 @@ def _job_to_response(job) -> JobResponse:
         firewall_conflicts=job.firewall_conflicts,
         firewall_rules_consolidated=job.firewall_rules_consolidated,
         tier_summary=job.tier_summary,
+        k8s_backup_id=job.k8s_backup_id,
+        k8s_workloads_migrated=job.k8s_workloads_migrated,
+        k8s_target_platform=job.k8s_target_platform,
+        containerization_candidates=job.containerization_candidates,
     )

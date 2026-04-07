@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.models.canonical import (
     ComputeResource,
+    KubernetesResource,
     NetworkSegment,
     SecurityPolicy,
     StorageVolume,
@@ -19,6 +20,7 @@ class DiscoveredResources(BaseModel):
     networks: list[NetworkSegment] = Field(default_factory=list)
     security_policies: list[SecurityPolicy] = Field(default_factory=list)
     storage: list[StorageVolume] = Field(default_factory=list)
+    kubernetes: list[KubernetesResource] = Field(default_factory=list)
 
     @property
     def resource_count(self) -> int:
@@ -28,6 +30,7 @@ class DiscoveredResources(BaseModel):
             + len(self.networks)
             + len(self.security_policies)
             + len(self.storage)
+            + len(self.kubernetes)
         )
 
 
@@ -74,6 +77,10 @@ class JobResponse(BaseModel):
     tier_summary: dict[str, int] = Field(
         default_factory=dict, description="Tier → subnet count"
     )
+    k8s_backup_id: str | None = Field(default=None, description="K8s backup identifier")
+    k8s_workloads_migrated: int = Field(default=0, description="K8s workloads migrated")
+    k8s_target_platform: str | None = Field(default=None, description="IKS or OpenShift")
+    containerization_candidates: int = Field(default=0, description="VMs recommended for containerization")
 
 
 class ErrorResponse(BaseModel):

@@ -13,8 +13,11 @@ from app.api.routes.analysis import router as analysis_router
 from app.api.routes.discovery import router as discovery_router
 from app.api.routes.migration import router as migration_router
 from app.core.config import get_settings
+from app.services.containerization import ContainerizationRecommender
 from app.services.discovery import DiscoveryService
 from app.services.firewall_engine import FirewallEngine
+from app.services.k8s_migration import K8sMigrationService
+from app.services.k8s_translation import K8sTranslationService
 from app.services.network_planner import NetworkPlanner
 from app.services.orchestrator import MigrationOrchestrator
 from app.services.strategy import StrategyEngine
@@ -29,6 +32,7 @@ logger = structlog.get_logger(__name__)
 ADAPTER_CONFIG: dict[str, str] = {
     "ibm_classic": "app.adapters.ibm_classic.adapter.IBMClassicAdapter",
     "vmware": "app.adapters.vmware.adapter.VMwareAdapter",
+    "kubernetes": "app.adapters.kubernetes.adapter.KubernetesAdapter",
 }
 
 
@@ -60,6 +64,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Phase 3 engines
     firewall_engine = FirewallEngine()
 
+    # Phase 4 engines
+    k8s_translation_service = K8sTranslationService()
+    k8s_migration_service = K8sMigrationService()
+    containerization_recommender = ContainerizationRecommender()
+
     orchestrator = MigrationOrchestrator(
         registry=registry,
         translation_service=translation_service,
@@ -68,6 +77,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         validation_engine=validation_engine,
         network_planner=network_planner,
         firewall_engine=firewall_engine,
+        k8s_translation_service=k8s_translation_service,
+        k8s_migration_service=k8s_migration_service,
+        containerization_recommender=containerization_recommender,
     )
 
     # Wire into FastAPI dependency injection
@@ -80,6 +92,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         validation_engine=validation_engine,
         network_planner=network_planner,
         firewall_engine=firewall_engine,
+        k8s_translation_service=k8s_translation_service,
+        k8s_migration_service=k8s_migration_service,
+        containerization_recommender=containerization_recommender,
     )
 
     yield
@@ -94,7 +109,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Migration Orchestration Engine",
         description="Multi-Platform Migration Orchestration Engine to IBM Cloud VPC",
-        version="0.5.0",
+        version="0.6.0",
         lifespan=lifespan,
         debug=settings.app_debug,
     )
